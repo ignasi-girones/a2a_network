@@ -1,4 +1,5 @@
 import type { DebateEvent } from '../types';
+import { Markdown } from './Markdown';
 
 interface Props {
   verdict: string | null;
@@ -41,9 +42,7 @@ export function VerdictDisplay({ verdict, error, status, lastEvent }: Props) {
         <h3 className="text-sm font-bold text-gray-800 mb-3 flex items-center gap-2">
           <span className="text-lg">&#9878;</span> Veredicto Final
         </h3>
-        <div className="prose prose-sm max-w-none text-gray-700 text-xs leading-relaxed whitespace-pre-wrap">
-          {verdict}
-        </div>
+        <Markdown className="text-gray-700">{verdict}</Markdown>
       </div>
     );
   }

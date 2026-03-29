@@ -1,4 +1,5 @@
 import type { DebateEvent } from '../types';
+import { Markdown } from './Markdown';
 
 interface Props {
   events: DebateEvent[];
@@ -58,9 +59,9 @@ export function DebateTimeline({ events }: Props) {
                   <summary className="text-[10px] text-gray-500 cursor-pointer hover:text-gray-700">
                     Ver argumento completo
                   </summary>
-                  <p className="mt-1 text-xs text-gray-600 whitespace-pre-wrap leading-relaxed">
-                    {event.data!.text}
-                  </p>
+                  <div className="mt-1 text-gray-600">
+                    <Markdown>{event.data!.text!}</Markdown>
+                  </div>
                 </details>
               )}
 
