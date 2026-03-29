@@ -1,0 +1,56 @@
+services:
+  orchestrator:
+    build: .
+    command: python -m agents.orchestrator
+    ports:
+      - "9000:9000"
+    env_file: .env
+    depends_on:
+      - normalizer
+      - ae1
+      - ae2
+      - feedback
+
+  normalizer:
+    build: .
+    command: python -m agents.normalizer
+    ports:
+      - "9001:9001"
+    env_file: .env
+
+  ae1:
+    build: .
+    command: python -m agents.specialized --port 9002 --agent-id ae1
+    ports:
+      - "9002:9002"
+    env_file: .env
+
+  ae2:
+    build: .
+    command: python -m agents.specialized --port 9003 --agent-id ae2
+    ports:
+      - "9003:9003"
+    env_file: .env
+
+  feedback:
+    build: .
+    command: python -m agents.feedback
+    ports:
+      - "9004:9004"
+    env_file: .env
+
+  mcp-tools:
+    build: .
+    command: python -m agents.mcp_tools.server
+    ports:
+      - "8100:8100"
+    env_file: .env
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    ports:
+      - "5173:5173"
+    depends_on:
+      - orchestrator
