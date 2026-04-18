@@ -9,6 +9,11 @@ function getEventStyle(event: DebateEvent) {
   const stage = event.stage;
   const agent = event.data?.agent;
 
+  if (stage === 'tool_use') {
+    if (agent === 'ae1') return { align: 'self-start', bg: 'bg-violet-50 border-violet-200', label: 'AE1 · Tool', labelColor: 'bg-violet-500' };
+    if (agent === 'ae2') return { align: 'self-end', bg: 'bg-violet-50 border-violet-200', label: 'AE2 · Tool', labelColor: 'bg-violet-500' };
+    return { align: 'self-center', bg: 'bg-violet-50 border-violet-200', label: 'Tool', labelColor: 'bg-violet-500' };
+  }
   if (agent === 'ae1') return { align: 'self-start', bg: 'bg-blue-50 border-blue-200', label: 'AE1', labelColor: 'bg-blue-600' };
   if (agent === 'ae2') return { align: 'self-end', bg: 'bg-emerald-50 border-emerald-200', label: 'AE2', labelColor: 'bg-emerald-600' };
   if (stage === 'consensus' || stage === 'complete') return { align: 'self-center', bg: 'bg-amber-50 border-amber-200', label: 'System', labelColor: 'bg-amber-600' };
@@ -63,6 +68,22 @@ export function DebateTimeline({ events }: Props) {
                     <Markdown>{event.data!.text!}</Markdown>
                   </div>
                 </details>
+              )}
+
+              {/* Tool use info */}
+              {event.stage === 'tool_use' && event.data?.tool && (
+                <div className="mt-2 flex flex-col gap-1">
+                  <div className="flex items-center gap-1.5 text-[10px] text-violet-700">
+                    <span className="font-mono bg-violet-100 px-1.5 py-0.5 rounded">
+                      {event.data.tool}()
+                    </span>
+                  </div>
+                  {event.data.query && (
+                    <p className="text-[10px] text-gray-500 font-mono truncate">
+                      &ldquo;{event.data.query}&rdquo;
+                    </p>
+                  )}
+                </div>
               )}
 
               {/* Roles info */}

@@ -1,4 +1,22 @@
+from datetime import datetime, timezone
+from typing import Any
+
 from pydantic import BaseModel, Field
+
+
+class WorkerEntry(BaseModel):
+    """A worker agent registered with the orchestrator's AgentRegistry.
+
+    The `card` field holds a serialized subset of the worker's AgentCard
+    (name, description, skills, capabilities) that the orchestrator's Planner
+    can consult to match sub-tasks to workers by skill id or tag.
+    """
+    agent_id: str
+    url: str
+    card: dict[str, Any] = Field(default_factory=dict)
+    registered_at: str = Field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
 
 
 class NormalizedPrompt(BaseModel):
@@ -60,3 +78,38 @@ class FlowResult(BaseModel):
     debate_rounds: list[DebateRound]
     consensus_reached: bool
     summary: str
+
+
+class SubTask(BaseModel):
+    """A single unit of work in a TaskPlan.
+
+    The Planner emits these as nodes of a DAG: each SubTask declares what it
+    needs (`required_skill`) and what must finish first (`depends_on`). The
+    PlanExecutor matches `required_skill` against worker AgentCard skills in
+    the AgentRegistry at execution time.
+    """
+    id: str = Field(description="Short unique id inside the plan, e.g. 't1'")
+    description: str = Field(
+        description="Concrete instruction this sub-agent should carry out"
+    )
+    required_skill: str = Field(
+        description="Skill id (AgentSkill.id) to look up in the registry"
+    )
+    depends_on: list[str] = Field(
+        default_factory=list,
+        description="IDs of subtasks whose outputs are needed before this runs",
+    )
+    perspective: str | None = Field(
+        default=None,
+        description="For debate-style workers: 'pro' / 'con' / 'neutral' / free text",
+    )
+
+
+class TaskPlan(BaseModel):
+    """The LLM's decomposition of a user request into a DAG of SubTasks."""
+    goal: str = Field(description="Restated user intent in one sentence")
+    subtasks: list[SubTask] = Field(default_factory=list)
+    max_workers: int = Field(
+        default=4,
+        description="Upper bound of workers this plan may need concurrently",
+    )

@@ -7,7 +7,6 @@ from a2a.types import (
     AgentInterface,
     AgentProvider,
     AgentSkill,
-    Part,
     Role,
     SendMessageRequest,
     StreamResponse,
@@ -71,7 +70,7 @@ async def create_a2a_client(base_url: str) -> tuple:
     card = await resolver.get_agent_card()
 
     config = ClientConfig(
-        streaming=False,
+        streaming=True,
         httpx_client=http_client,
     )
     factory = ClientFactory(config=config)
@@ -84,6 +83,7 @@ async def send_and_get_text(
     text: str,
     context_id: str | None = None,
     task_id: str | None = None,
+    on_intermediate=None,
 ) -> str:
     """Send a text message to an agent and return the response text.
 
@@ -92,10 +92,14 @@ async def send_and_get_text(
         text: The text content to send
         context_id: Optional context ID for multi-turn
         task_id: Optional task ID for continuing a task
+        on_intermediate: Optional async callback(metadata: dict) called for
+            each WORKING status update emitted by the remote agent.
 
     Returns:
         The agent's text response.
     """
+    import json as _json
+
     message = create_text_message_object(role=Role.ROLE_USER, content=text)
     if context_id:
         message.context_id = context_id
@@ -107,20 +111,44 @@ async def send_and_get_text(
     result_text = ""
     async for event in client.send_message(request):
         stream_response: StreamResponse = event[0]
-        if stream_response.HasField("message"):
+        if stream_response.HasField("status_update"):
+            # Relay intermediate WORKING events (e.g. tool usage) upward
+            if on_intermediate and stream_response.status_update.status.message:
+                for part in stream_response.status_update.status.message.parts:
+                    if part.text:
+                        try:
+                            metadata = _json.loads(part.text)
+                            await on_intermediate(metadata)
+                        except Exception:
+                            pass
+        elif stream_response.HasField("message"):
             for part in stream_response.message.parts:
                 if part.text:
                     result_text += part.text
         elif stream_response.HasField("task"):
             task = stream_response.task
+            # Only extract text from completed tasks, not intermediate working ones
+            from a2a.types import TaskState as _TaskState
+            if task.status.state != _TaskState.TASK_STATE_COMPLETED:
+                continue
             if task.artifacts:
                 for artifact in task.artifacts:
                     for part in artifact.parts:
                         if part.text:
                             result_text += part.text
-            if task.status and task.status.message:
+            elif task.status.message:
                 for part in task.status.message.parts:
                     if part.text:
+                        # Parts whose text is JSON with a "stage" key are tool
+                        # metadata emitted by SpecializedExecutor. Route them to
+                        # on_intermediate instead of accumulating as response text.
+                        try:
+                            meta = _json.loads(part.text)
+                            if "stage" in meta and on_intermediate:
+                                await on_intermediate(meta)
+                                continue
+                        except (ValueError, KeyError):
+                            pass
                         result_text += part.text
 
     return result_text

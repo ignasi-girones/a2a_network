@@ -1,5 +1,7 @@
 import argparse
+import asyncio
 import logging
+from contextlib import asynccontextmanager
 
 import uvicorn
 from a2a.server.apps import A2AStarletteApplication
@@ -12,6 +14,11 @@ from agents.specialized.config_api import config_routes
 from agents.specialized.executor import SpecializedExecutor
 from common.a2a_helpers import build_agent_card, build_skill
 from common.config import settings
+from common.registry_client import (
+    agent_card_to_dict,
+    deregister_self,
+    register_self_with_orchestrator,
+)
 
 logging.basicConfig(level=logging.INFO)
 
@@ -19,12 +26,14 @@ logging.basicConfig(level=logging.INFO)
 def main():
     parser = argparse.ArgumentParser(description="Specialized Agent (AE)")
     parser.add_argument("--port", type=int, required=True)
-    parser.add_argument("--agent-id", type=str, required=True, choices=["ae1", "ae2"])
+    # --agent-id accepts arbitrary IDs so WorkerSpawner can launch
+    # dynamic workers like "dyn_debate_3". The base agents still use "ae1"/"ae2".
+    parser.add_argument("--agent-id", type=str, required=True)
     args = parser.parse_args()
 
     port = args.port
     agent_id = args.agent_id
-    url = f"http://localhost:{port}"
+    url = settings.own_url(port)
 
     # Select model based on agent ID
     model = settings.ae1_model if agent_id == "ae1" else settings.ae2_model
@@ -45,7 +54,7 @@ def main():
                 tags=["debate", "analysis"],
             )
         ],
-        streaming=False,
+        streaming=True,
     )
 
     # Dynamic card modifier: reads from AgentState to serve current role
@@ -81,7 +90,29 @@ def main():
         card_modifier=card_modifier,
     )
 
-    starlette_app = app.build()
+    # Serialize the card once for registry use.
+    card_dict = agent_card_to_dict(
+        name=initial_card.name,
+        description=initial_card.description,
+        skills=initial_card.skills,
+        streaming=True,
+    )
+
+    # Lifespan hook — register on startup, deregister on shutdown.
+    # Starlette 1.0 removed add_event_handler; lifespan is the supported API.
+    @asynccontextmanager
+    async def lifespan(_app):
+        asyncio.create_task(
+            register_self_with_orchestrator(
+                agent_id=agent_id, url=url, card=card_dict
+            )
+        )
+        try:
+            yield
+        finally:
+            await deregister_self(agent_id)
+
+    starlette_app = app.build(lifespan=lifespan)
 
     # Mount internal config API routes
     starlette_app.state.agent_state = state

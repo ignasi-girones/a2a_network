@@ -6,7 +6,9 @@ from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.tasks import InMemoryTaskStore
 from starlette.middleware.cors import CORSMiddleware
 
+from agents.orchestrator.agent_registry import registry_routes
 from agents.orchestrator.executor import OrchestratorExecutor
+from agents.orchestrator.planner_routes import planner_routes
 from common.a2a_helpers import build_agent_card, build_skill
 from common.config import settings
 
@@ -15,7 +17,7 @@ logging.basicConfig(level=logging.INFO)
 
 def main():
     port = settings.orchestrator_port
-    url = f"http://localhost:{port}"
+    url = settings.own_url(port)
 
     skills = [
         build_skill(
@@ -54,10 +56,23 @@ def main():
 
     starlette_app = app.build()
 
-    # Add CORS for frontend (localhost:3000)
+    # Mount AgentRegistry routes (infrastructure, not A2A protocol).
+    # Workers POST /registry/register on startup so the orchestrator can
+    # discover their capabilities dynamically instead of relying on hardcoded ports.
+    for route in registry_routes:
+        starlette_app.routes.insert(0, route)
+
+    # Mount Planner debug routes. POST /orchestrator/plan returns the plan
+    # the orchestrator would generate for a given prompt — useful for the
+    # frontend timeline and for inspecting the Planner output without
+    # triggering the full debate flow.
+    for route in planner_routes:
+        starlette_app.routes.insert(0, route)
+
+    # CORS for the frontend. Configurable via CORS_ORIGINS env var (comma-sep).
     starlette_app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:3000", "http://localhost:5173"],
+        allow_origins=settings.cors_origins_list,
         allow_methods=["*"],
         allow_headers=["*"],
     )

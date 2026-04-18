@@ -9,6 +9,8 @@ export interface DebateEvent {
     ae2_role?: string;
     max_rounds?: number;
     verdict?: string;
+    tool?: string;
+    query?: string;
   };
 }
 

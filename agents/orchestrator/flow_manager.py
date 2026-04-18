@@ -295,7 +295,9 @@ class FlowManager:
         async def get_opinion(port: int) -> str:
             client, _ = await create_a2a_client(settings.agent_url(port))
             try:
-                return await send_and_get_text(client, prompt)
+                return await send_and_get_text(
+                    client, prompt, on_intermediate=self._relay_intermediate
+                )
             finally:
                 await client.close()
 
@@ -311,9 +313,19 @@ class FlowManager:
         """Send a message to an agent via A2A."""
         client, _ = await create_a2a_client(settings.agent_url(port))
         try:
-            return await send_and_get_text(client, text, context_id=context_id)
+            return await send_and_get_text(
+                client, text, context_id=context_id,
+                on_intermediate=self._relay_intermediate,
+            )
         finally:
             await client.close()
+
+    async def _relay_intermediate(self, metadata: dict) -> None:
+        """Relay intermediate events from AE agents to the frontend SSE stream."""
+        stage = metadata.get("stage", "info")
+        message = metadata.get("message", "")
+        data = metadata.get("data")
+        await self.progress.on_progress(stage, message, data)
 
     async def _check_consensus(
         self, ae1_text: str, ae2_text: str, ae1_role: str, ae2_role: str

@@ -12,11 +12,13 @@ import re
 
 from mcp.server.fastmcp import FastMCP
 
+from common.config import settings
+
 mcp = FastMCP(
     name="Debate Tools",
     instructions="Tools available to specialized debate agents for enhanced reasoning.",
     host="0.0.0.0",
-    port=8100,
+    port=settings.mcp_port,
 )
 
 
@@ -34,7 +36,6 @@ def calculator(expression: str) -> str:
         The result as a string, or an error message.
     """
     # Sanitize: only allow numbers, operators, parentheses, and safe functions
-    safe_pattern = r'^[\d\s\+\-\*/\.\(\)\,\%]+$'
     func_pattern = r'\b(sqrt|abs|round|min|max|log|pow|int|float)\b'
 
     clean_expr = re.sub(func_pattern, lambda m: f"__{m.group()}__", expression)
@@ -112,7 +113,7 @@ async def web_search(query: str) -> str:
 
 def main():
     """Run the MCP tools server."""
-    print("MCP Tools Server starting on http://0.0.0.0:8100")
+    print(f"MCP Tools Server starting on http://0.0.0.0:{settings.mcp_port}")
     mcp.run(transport="streamable-http")
 
 

@@ -14,7 +14,10 @@ from a2a.types import (
     TaskStatusUpdateEvent,
 )
 
-from agents.orchestrator.flow_manager import FlowManager, ProgressCallback
+from agents.orchestrator.agent_registry import registry
+from agents.orchestrator.agentic_orchestrator import AgenticOrchestrator
+from agents.orchestrator.plan_executor import ProgressCallback
+from agents.orchestrator.worker_spawner import get_spawner
 
 logger = logging.getLogger(__name__)
 
@@ -67,8 +70,12 @@ class OrchestratorExecutor(AgentExecutor):
         )
 
         try:
-            flow = FlowManager(progress=progress)
-            verdict = await flow.run_debate(user_input)
+            orchestrator = AgenticOrchestrator(
+                registry=registry,
+                spawner=get_spawner(),
+                progress=progress,
+            )
+            verdict = await orchestrator.run(user_input)
 
             # Send final completed task with verdict
             await event_queue.enqueue_event(

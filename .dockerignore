@@ -1,0 +1,39 @@
+# Keep the build context small: Docker only needs source + requirements.
+.git
+.github
+.gitignore
+.pytest_cache
+.ruff_cache
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.egg-info
+
+# Local env and secrets — never bake into images.
+.env
+.env.*
+!.env.example
+
+# Frontend build artifacts (the frontend image has its own context).
+frontend/node_modules
+frontend/dist
+frontend/.vite
+
+# Tests and docs aren't needed in the runtime image.
+tests/
+docs/
+*.md
+!README.md
+
+# Editor / OS junk
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+
+# Log files, local DBs, etc.
+*.log
+*.sqlite
+*.db
+tmp_*

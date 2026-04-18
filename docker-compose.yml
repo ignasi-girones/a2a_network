@@ -1,56 +1,174 @@
+# docker-compose.yml — production-style deployment for the UPC FIB VM.
+#
+# External port tunnel (nattech.fib.upc.edu → 172.16.4.53):
+#   40530 → 8080  orchestrator    (public API + SSE)
+#   40531 → 8081  normalizer      (debug / agent card inspection)
+#   40532 → 8082  ae1             (debug)
+#   40533 → 8083  ae2             (debug)
+#   40534 → 8084  feedback        (debug)
+#   40535 → 8085  mcp-tools       (debug)
+#   40536 → 8086  frontend        (public demo URL)
+#   40537-40539 → 8087-8089       (spare)
+#
+# SSH to the VM:  ssh alumne@nattech.fib.upc.edu -p 22053
+# Deploy:         docker compose up -d --build
+# Logs:           docker compose logs -f orchestrator
+#
+# Key properties:
+#  * Each agent reaches the orchestrator as http://orchestrator:8080 via
+#    Docker DNS; agents advertise themselves to the registry as
+#    http://<service-name>:<port> via SELF_HOST.
+#  * Healthchecks gate `depends_on` so the orchestrator only starts after
+#    workers are ready — this matters because workers self-register on
+#    startup, and the orchestrator then reads the registry to build plans.
+#  * A named `a2a_net` network keeps service-name DNS stable across restarts.
+#  * `restart: unless-stopped` so agents auto-recover from crashes on the VM.
+
+name: a2a-network
+
+x-backend-base: &backend-base
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: a2a-network-backend:latest
+  env_file: .env
+  restart: unless-stopped
+  networks:
+    - a2a_net
+
 services:
   orchestrator:
-    build: .
+    <<: *backend-base
     command: python -m agents.orchestrator
+    environment:
+      ORCHESTRATOR_HOST: orchestrator
+      SELF_HOST: orchestrator
+      ORCHESTRATOR_PORT: "8080"
+      # CORS must include wherever the browser actually loads the app from.
+      # On the VM the frontend is at nattech.fib.upc.edu:40536.
+      CORS_ORIGINS: "${CORS_ORIGINS:-http://localhost:5173,http://localhost:8086,http://nattech.fib.upc.edu:40536}"
     ports:
-      - "9000:9000"
-    env_file: .env
+      - "8080:8080"
     depends_on:
-      - normalizer
-      - ae1
-      - ae2
-      - feedback
+      normalizer:
+        condition: service_healthy
+      ae1:
+        condition: service_healthy
+      ae2:
+        condition: service_healthy
+      feedback:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8080/.well-known/agent.json"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
 
   normalizer:
-    build: .
+    <<: *backend-base
     command: python -m agents.normalizer
+    environment:
+      ORCHESTRATOR_HOST: orchestrator
+      SELF_HOST: normalizer
+      NORMALIZER_PORT: "8081"
     ports:
-      - "9001:9001"
-    env_file: .env
+      - "8081:8081"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8081/.well-known/agent.json"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
 
   ae1:
-    build: .
-    command: python -m agents.specialized --port 9002 --agent-id ae1
+    <<: *backend-base
+    command: python -m agents.specialized --port 8082 --agent-id ae1
+    environment:
+      ORCHESTRATOR_HOST: orchestrator
+      SELF_HOST: ae1
+      MCP_HOST: mcp-tools
     ports:
-      - "9002:9002"
-    env_file: .env
+      - "8082:8082"
+    depends_on:
+      mcp-tools:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8082/.well-known/agent.json"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
 
   ae2:
-    build: .
-    command: python -m agents.specialized --port 9003 --agent-id ae2
+    <<: *backend-base
+    command: python -m agents.specialized --port 8083 --agent-id ae2
+    environment:
+      ORCHESTRATOR_HOST: orchestrator
+      SELF_HOST: ae2
+      MCP_HOST: mcp-tools
     ports:
-      - "9003:9003"
-    env_file: .env
+      - "8083:8083"
+    depends_on:
+      mcp-tools:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8083/.well-known/agent.json"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
 
   feedback:
-    build: .
+    <<: *backend-base
     command: python -m agents.feedback
+    environment:
+      ORCHESTRATOR_HOST: orchestrator
+      SELF_HOST: feedback
+      FEEDBACK_PORT: "8084"
     ports:
-      - "9004:9004"
-    env_file: .env
+      - "8084:8084"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8084/.well-known/agent.json"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
 
   mcp-tools:
-    build: .
+    <<: *backend-base
     command: python -m agents.mcp_tools.server
+    environment:
+      SELF_HOST: mcp-tools
+      MCP_PORT: "8085"
     ports:
-      - "8100:8100"
-    env_file: .env
+      - "8085:8085"
+    # MCP server is pure HTTP streaming; no /.well-known endpoint. Use a
+    # plain TCP dial to confirm it's accepting connections.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket,sys; s=socket.socket(); s.settimeout(2); s.connect(('localhost', 8085)); sys.exit(0)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
 
   frontend:
     build:
       context: .
       dockerfile: Dockerfile.frontend
+    image: a2a-network-frontend:latest
+    restart: unless-stopped
     ports:
-      - "5173:5173"
+      - "8086:8086"
+    environment:
+      # Vite's `/api` proxy target (server-side, inside the Docker network).
+      VITE_PROXY_TARGET: "http://orchestrator:8080"
     depends_on:
-      - orchestrator
+      orchestrator:
+        condition: service_healthy
+    networks:
+      - a2a_net
+
+networks:
+  a2a_net:
+    driver: bridge
