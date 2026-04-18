@@ -66,9 +66,9 @@ EXPOSE 8080
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["python", "-m", "agents.orchestrator"]
 
-# Each agent exposes /.well-known/agent.json (A2A discovery). A 200 there
-# means the ASGI app is up and serving. Individual services override this
-# healthcheck in docker-compose with their own port — the default here
-# targets the orchestrator on 8080 (matches the nattech:40530 tunnel).
+# Each agent exposes /.well-known/agent-card.json (A2A v1.0 discovery).
+# A 200 there means the ASGI app is up and serving. Individual services
+# override this healthcheck in docker-compose with their own port — the
+# default here targets the orchestrator on 8080 (nattech:40530 tunnel).
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD curl --fail --silent http://localhost:8080/.well-known/agent.json || exit 1
+    CMD curl --fail --silent http://localhost:8080/.well-known/agent-card.json || exit 1
