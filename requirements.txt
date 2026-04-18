@@ -2,7 +2,8 @@
 # Requiere Python 3.12+
 
 # ── Core A2A protocol SDK ──────────────────────────────────────────────────────
-a2a-sdk[http,sqlite]==1.0.0a0
+# The real extra is `http-server`; `http` silently no-ops with a warning.
+a2a-sdk[http-server,sqlite]==1.0.0a0
 
 # ── LLM (wrapper unificado para Groq, Gemini, Mistral, Cerebras, Ollama) ───────
 litellm>=1.55

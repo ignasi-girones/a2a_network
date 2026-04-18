@@ -1,11 +1,18 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "a2a-network"
 version = "0.1.0"
 description = "A2A protocol debate network - University project"
 requires-python = ">=3.12"
 dependencies = [
-    "a2a-sdk[http,sqlite]==1.0.0a0",
+    # `http-server` is the real extra name (pip warns silently that `http`
+    # doesn't exist). `sqlite` pulls in sqlalchemy for the task store.
+    "a2a-sdk[http-server,sqlite]==1.0.0a0",
     "litellm>=1.55",
+    "mcp>=1.0",
     "uvicorn[standard]>=0.30",
     "httpx>=0.27",
     "pydantic>=2.0",
@@ -20,6 +27,13 @@ dev = [
     "pytest-asyncio>=0.24",
     "ruff>=0.8",
 ]
+
+# Tell setuptools which top-level folders are Python packages. Without this,
+# setuptools refuses the editable install ("Multiple top-level packages
+# discovered in a flat-layout: ['agents', 'common', 'frontend']").
+[tool.setuptools.packages.find]
+include = ["agents*", "common*"]
+exclude = ["frontend*", "tests*", "docs*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
