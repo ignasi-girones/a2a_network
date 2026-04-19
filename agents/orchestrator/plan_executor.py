@@ -125,23 +125,38 @@ class PlanExecutor:
                     await self.progress.on_progress(
                         "subtask_failed",
                         f"Subtarea {task.id} falló: {output}",
-                        {"subtask_id": task.id, "error": str(output)},
+                        {
+                            "subtask_id": task.id,
+                            "required_skill": task.required_skill,
+                            "perspective": task.perspective,
+                            "error": str(output),
+                        },
                     )
                     raise PlanExecutionError(
                         f"Subtask {task.id} failed: {output}"
                     ) from output
                 results[task.id] = output
                 pending.remove(task)
+                # Full output travels in `text`; `output_preview` kept for
+                # log views that want a single-line summary.
                 await self.progress.on_progress(
                     "subtask_done",
                     f"Subtarea {task.id} completada",
-                    {"subtask_id": task.id, "output_preview": output[:200]},
+                    {
+                        "subtask_id": task.id,
+                        "required_skill": task.required_skill,
+                        "perspective": task.perspective,
+                        "text": output,
+                        "output_preview": output[:200],
+                    },
                 )
 
         await self.progress.on_progress(
             "plan_complete",
             "Plan completo",
-            {"results": {k: v[:200] for k, v in results.items()}},
+            # Per-subtask full text is already in the subtask_done events;
+            # here we just mark completion without re-sending it all.
+            {"subtask_ids": list(results.keys())},
         )
         return results
 
@@ -155,6 +170,10 @@ class PlanExecutor:
         """Build the prompt, A2A-call the assigned worker, return the response."""
         prompt = _build_subtask_prompt(task, dep_results, goal)
 
+        # Dispatch event carries everything the frontend needs to render the
+        # node transitioning to "running": worker id, required skill,
+        # perspective (pro/con/null for debate tasks), full description, and
+        # the dependency inputs this subtask was given (useful for tracing).
         await self.progress.on_progress(
             "subtask_dispatch",
             f"→ {worker.agent_id}: {task.description[:80]}",
@@ -162,6 +181,9 @@ class PlanExecutor:
                 "subtask_id": task.id,
                 "worker_id": worker.agent_id,
                 "required_skill": task.required_skill,
+                "perspective": task.perspective,
+                "description": task.description,
+                "depends_on": task.depends_on,
             },
         )
 
