@@ -66,7 +66,12 @@ Rules:
 - `perspective` is only meaningful for debate-style workers; use null otherwise.
 - Prefer a pipeline where a normalization/structuring step runs first, then
   analytical workers run in parallel on its output, then a synthesis step.
-- Never invent skills: only use skill IDs from the catalog provided.
+- CRITICAL: `required_skill` MUST be copied VERBATIM from the catalog's skill
+  `id` field. Never invent, translate, or generalize a skill name. If the
+  catalog offers `normalize_input`, `debate`, `format_verdict` then those are
+  the ONLY valid values. Skills like `research`, `analysis`, `summarize`,
+  `search`, etc. DO NOT EXIST unless they appear in the catalog — using them
+  will cause the plan to fail immediately.
 - Keep descriptions concrete and actionable — a worker should be able to act
   on the `description` alone (plus the outputs of its `depends_on`).
 """
@@ -106,11 +111,17 @@ def _format_worker_catalog(workers: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def _parse_plan(raw: str) -> TaskPlan:
+def _parse_plan(raw: str, known_skills: set[str] | None = None) -> TaskPlan:
     """Parse and validate a planner LLM response into a TaskPlan.
 
-    Raises ValueError on malformed JSON or invalid plan structure (unknown
-    dependencies, duplicate IDs, empty subtasks list).
+    Raises ValueError on malformed JSON or invalid plan structure: unknown
+    dependencies, duplicate IDs, empty subtasks list, or — when
+    `known_skills` is provided — `required_skill` values that aren't in
+    the catalog.
+
+    The skill check lives here (not in the executor) so the Planner can
+    detect hallucinated skills and re-prompt the LLM with a corrective
+    message before burning a full execution attempt.
     """
     data = json.loads(raw)
     plan = TaskPlan(**data)
@@ -127,6 +138,17 @@ def _parse_plan(raw: str) -> TaskPlan:
                 raise ValueError(
                     f"Subtask {t.id!r} depends on unknown id {dep!r}"
                 )
+
+    if known_skills is not None:
+        invented = {
+            t.required_skill for t in plan.subtasks
+            if t.required_skill not in known_skills
+        }
+        if invented:
+            raise ValueError(
+                f"Plan references unknown skills {sorted(invented)}. "
+                f"Available skills: {sorted(known_skills)}"
+            )
     return plan
 
 
@@ -154,8 +176,16 @@ class Planner:
         is expected to carry at least {agent_id, url, skills}.
         """
         catalog = _format_worker_catalog(workers)
+        known_skills = {
+            s.get("id")
+            for w in workers
+            for s in (w.get("skills") or [])
+            if s.get("id")
+        }
         user_prompt = (
             f"Available workers:\n{catalog}\n\n"
+            f"Valid `required_skill` values (choose ONLY from this set): "
+            f"{sorted(known_skills)}\n\n"
             f"User request:\n{user_input}\n\n"
             "Emit the JSON plan now."
         )
@@ -164,7 +194,7 @@ class Planner:
             {"role": "user", "content": user_prompt},
         ]
 
-        for attempt in range(2):
+        for attempt in range(3):
             raw = await llm_complete(
                 model=self.model,
                 messages=messages,
@@ -173,7 +203,7 @@ class Planner:
                 response_format={"type": "json_object"},
             )
             try:
-                plan = _parse_plan(raw)
+                plan = _parse_plan(raw, known_skills=known_skills)
                 logger.info(
                     "Planner produced %d subtasks for goal=%r",
                     len(plan.subtasks),
@@ -189,7 +219,8 @@ class Planner:
                     "role": "user",
                     "content": (
                         f"That response was invalid: {e}. "
-                        "Return ONLY valid JSON in the exact shape described."
+                        f"Remember: `required_skill` MUST be one of "
+                        f"{sorted(known_skills)}. Return ONLY valid JSON."
                     ),
                 })
 
@@ -256,12 +287,19 @@ class Planner:
     ) -> TaskPlan:
         """Produce a revised plan after a subtask failed."""
         catalog = _format_worker_catalog(workers)
+        known_skills = {
+            s.get("id")
+            for w in workers
+            for s in (w.get("skills") or [])
+            if s.get("id")
+        }
         user_prompt = (
             f"Original goal: {original.goal}\n\n"
             f"Original plan JSON:\n{original.model_dump_json(indent=2)}\n\n"
             f"Failed subtask id: {failed_task.id}\n"
             f"Failure reason: {error}\n\n"
             f"Current worker catalog:\n{catalog}\n\n"
+            f"Valid `required_skill` values: {sorted(known_skills)}\n\n"
             "Emit the revised JSON plan now."
         )
         messages = [
@@ -276,4 +314,4 @@ class Planner:
             max_tokens=self.max_tokens,
             response_format={"type": "json_object"},
         )
-        return _parse_plan(raw)
+        return _parse_plan(raw, known_skills=known_skills)
