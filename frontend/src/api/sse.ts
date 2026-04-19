@@ -1,6 +1,29 @@
 import type { DebateEvent } from '../types';
 
 /**
+ * Generate a RFC4122-ish UUID without relying on crypto.randomUUID().
+ *
+ * crypto.randomUUID() is only available in "secure contexts" (HTTPS or
+ * localhost). The VM deployment is served over plain HTTP
+ * (http://nattech.fib.upc.edu:40536), where calling crypto.randomUUID
+ * throws TypeError and kills the request before it's sent.
+ */
+function uuid(): string {
+  // Prefer crypto.randomUUID when available (HTTPS / localhost dev).
+  const c = (globalThis as { crypto?: Crypto }).crypto;
+  if (c && typeof c.randomUUID === 'function') {
+    return c.randomUUID();
+  }
+  // Fallback: Math.random-backed v4 UUID. Not cryptographically strong,
+  // which is fine — we only use these IDs as JSON-RPC correlation keys.
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (ch) => {
+    const r = (Math.random() * 16) | 0;
+    const v = ch === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
+/**
  * Send a debate request to the orchestrator via A2A JSON-RPC
  * and stream SSE events back.
  *
@@ -13,20 +36,20 @@ export async function startDebateStream(
   onComplete: (verdict: string) => void,
   onError: (error: string) => void,
 ): Promise<void> {
-  const requestBody = {
-    jsonrpc: '2.0',
-    id: crypto.randomUUID(),
-    method: 'SendStreamingMessage',
-    params: {
-      message: {
-        message_id: crypto.randomUUID(),
-        role: 'ROLE_USER',
-        parts: [{ text: prompt }],
-      },
-    },
-  };
-
   try {
+    const requestBody = {
+      jsonrpc: '2.0',
+      id: uuid(),
+      method: 'SendStreamingMessage',
+      params: {
+        message: {
+          message_id: uuid(),
+          role: 'ROLE_USER',
+          parts: [{ text: prompt }],
+        },
+      },
+    };
+
     const response = await fetch('/api/', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
