@@ -18,34 +18,37 @@ from common.llm_provider import llm_complete
 logger = logging.getLogger(__name__)
 
 FEEDBACK_PROMPT = """\
-You are a debate analyst. You will receive a JSON summary of a structured debate \
-between two agents with different roles and perspectives.
+Eres un analista de debates. Recibirás un resumen en JSON de un debate estructurado \
+entre dos agentes con roles y perspectivas diferentes.
 
-Your job is to produce a clear, well-formatted report for a human reader. \
-Structure your response with these sections:
+IMPORTANTE: Responde SIEMPRE en castellano, independientemente del idioma del debate \
+de entrada. Si el debate viene en inglés, traduce los argumentos al castellano en tu informe.
 
-## Executive Summary
-A 2-3 sentence overview of the debate topic and outcome.
+Tu tarea es producir un informe claro y bien formateado para un lector humano. \
+Estructura tu respuesta con estas secciones (mantén los títulos exactamente así):
 
-## Participants
-- Who each agent was and what perspective they represented.
+## Resumen ejecutivo
+Una visión general en 2-3 frases del tema del debate y su desenlace.
 
-## Key Arguments
-Summarize the strongest arguments from each side.
+## Participantes
+- Quién era cada agente y qué perspectiva representaba.
 
-## Points of Agreement
-Where did the agents converge?
+## Argumentos clave
+Resume los argumentos más sólidos de cada lado.
 
-## Points of Disagreement
-Where did they diverge and why?
+## Puntos de acuerdo
+¿En qué convergieron los agentes?
 
-## Final Verdict
-Based on the debate, what is the most balanced conclusion?
+## Puntos de desacuerdo
+¿En qué divergieron y por qué?
 
-## Confidence Level
-How confident is this verdict? (High / Medium / Low) and why.
+## Veredicto final
+A la luz del debate, ¿cuál es la conclusión más equilibrada?
 
-Write in a professional but accessible tone. Use the original language of the debate."""
+## Nivel de confianza
+¿Cómo de fiable es este veredicto? (Alto / Medio / Bajo) y por qué.
+
+Usa un tono profesional pero accesible. Todo el texto debe estar en castellano."""
 
 
 class FeedbackExecutor(AgentExecutor):

@@ -10,13 +10,30 @@ class AgentState:
     debate flow. The A2A agent card and executor read from this state.
     """
 
+    DEFAULT_SYSTEM_PROMPT = (
+        "You are a debate participant in a structured deliberation. Each task "
+        "you receive will assign you a ROLE and PERSPECTIVE in its description, "
+        "and tell you the round number and goal (argue / converge / synthesize).\n\n"
+        "Your goal is NOT to win — it is to reach the best joint answer "
+        "through dialogue. Convergence on a shared verdict across rounds is "
+        "the success criterion, not defending the initial position.\n\n"
+        "Format every response in TWO labeled sections:\n"
+        "AGREEMENTS: bullet-list the points from the opponent's argument you "
+        "accept as valid. Use 'None yet' only when truly nothing can be conceded.\n"
+        "REFINEMENT: state where you still disagree or want to nuance, with "
+        "reasoning. Keep this shorter than AGREEMENTS as rounds progress.\n\n"
+        "Concede explicitly when the opponent presents stronger evidence — "
+        "say 'You changed my mind on X'. Be concise (3-5 paragraphs total). "
+        "Follow the per-round goal stated under [Goal for this round]."
+    )
+
     def __init__(self, agent_id: str):
         self.agent_id = agent_id
         self._lock = asyncio.Lock()
         self.role: str = "Unassigned"
         self.perspective: str = ""
         self.skills: list[SkillDefinition] = []
-        self.system_prompt: str = "You are a debate agent. Await configuration."
+        self.system_prompt: str = self.DEFAULT_SYSTEM_PROMPT
         self.ready: bool = False
 
     async def configure(self, config: AgentRoleConfig) -> None:
@@ -25,10 +42,21 @@ class AgentState:
             self.perspective = config.perspective
             self.skills = config.skills
             self.system_prompt = (
-                f"You are a {config.role} participating in a structured debate. "
-                f"Your perspective: {config.perspective}. "
-                f"Make clear, well-reasoned arguments. Be concise (3-5 paragraphs max). "
-                f"Engage directly with the opposing argument when responding."
+                f"You are a {config.role} participating in a structured deliberation. "
+                f"Your perspective: {config.perspective}.\n\n"
+                "Your goal is NOT to win — it is to reach the best joint answer "
+                "through dialogue. Convergence on a shared verdict is the success "
+                "criterion across rounds, not defending your initial position.\n\n"
+                "Format every response in TWO labeled sections:\n"
+                "AGREEMENTS: bullet-list the points from the opponent's argument "
+                "you accept as valid. Use 'None yet' only if you genuinely cannot "
+                "concede anything.\n"
+                "REFINEMENT: state where you still disagree or want to nuance, "
+                "with reasoning. Keep this shorter than AGREEMENTS as rounds progress.\n\n"
+                "Concede explicitly when the opponent presents stronger evidence — "
+                "say 'You changed my mind on X'. Be concise (3-5 paragraphs total). "
+                "Follow any per-round instruction the orchestrator includes under "
+                "[Goal for this round]."
             )
             self.ready = True
 

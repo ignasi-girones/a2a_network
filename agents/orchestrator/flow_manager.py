@@ -129,8 +129,9 @@ class FlowManager:
             max_rounds=role_decision.max_rounds,
         )
 
-        ae1_latest = ae1_opinion
-        ae2_latest = ae2_opinion
+        # Each list is the agent's full chronological output: [initial, round1, round2, ...]
+        ae1_arguments: list[str] = [ae1_opinion]
+        ae2_arguments: list[str] = [ae2_opinion]
         context_id = str(uuid4())
 
         for round_num in range(1, role_decision.max_rounds + 1):
@@ -139,24 +140,42 @@ class FlowManager:
                 {"round": round_num},
             )
 
-            # AE2 responds to AE1's position
+            # AE2 responds to AE1's latest position (initial or last round)
+            ae2_prompt = self._build_round_prompt(
+                topic=normalized_json,
+                role=role_decision.ae2_config.role,
+                own_arguments=ae2_arguments,
+                opponent_arguments=ae1_arguments,
+                round_num=round_num,
+                max_rounds=role_decision.max_rounds,
+            )
             ae2_response = await self._send_to_agent(
                 port=settings.ae2_port,
-                text=f"Respond to this argument from the opposing side:\n\n{ae1_latest}",
+                text=ae2_prompt,
                 context_id=context_id,
             )
+            ae2_arguments.append(ae2_response)
             await self.progress.on_progress(
                 "ae2_argues",
                 f"Ronda {round_num}: AE2 responde",
                 {"agent": "ae2", "round": round_num, "text": ae2_response},
             )
 
-            # AE1 responds to AE2's response
+            # AE1 responds to AE2's just-issued argument
+            ae1_prompt = self._build_round_prompt(
+                topic=normalized_json,
+                role=role_decision.ae1_config.role,
+                own_arguments=ae1_arguments,
+                opponent_arguments=ae2_arguments,
+                round_num=round_num,
+                max_rounds=role_decision.max_rounds,
+            )
             ae1_response = await self._send_to_agent(
                 port=settings.ae1_port,
-                text=f"Respond to this argument from the opposing side:\n\n{ae2_response}",
+                text=ae1_prompt,
                 context_id=context_id,
             )
+            ae1_arguments.append(ae1_response)
             await self.progress.on_progress(
                 "ae1_argues",
                 f"Ronda {round_num}: AE1 responde",
@@ -171,12 +190,9 @@ class FlowManager:
                 )
             )
 
-            ae1_latest = ae1_response
-            ae2_latest = ae2_response
-
-            # Check consensus
+            # Check consensus on the two latest positions
             consensus = await self._check_consensus(
-                ae1_latest, ae2_latest,
+                ae1_response, ae2_response,
                 role_decision.ae1_config.role,
                 role_decision.ae2_config.role,
             )
@@ -326,6 +342,68 @@ class FlowManager:
         message = metadata.get("message", "")
         data = metadata.get("data")
         await self.progress.on_progress(stage, message, data)
+
+    def _build_round_prompt(
+        self,
+        *,
+        topic: str,
+        role: str,
+        own_arguments: list[str],
+        opponent_arguments: list[str],
+        round_num: int,
+        max_rounds: int,
+    ) -> str:
+        """Build a structured per-round prompt with full debate history.
+
+        own_arguments[0] is the agent's initial opinion; the rest are its
+        responses from prior rounds. opponent_arguments works the same way,
+        and its last entry is the move this turn must respond to.
+        """
+        is_final = round_num == max_rounds and max_rounds >= 2
+        if is_final:
+            goal = (
+                "FINAL ROUND — synthesis. The adversarial phase is over. "
+                "Drop your assigned-perspective stance and propose a single "
+                "integrated answer that combines the strongest points from "
+                "both sides. Lead with the shared ground you have already "
+                "built, then offer a unified verdict you would accept as "
+                "the conclusion of this deliberation."
+            )
+        elif round_num == 1:
+            goal = (
+                "Round 1 — argue your position from your assigned perspective, "
+                "but explicitly acknowledge any valid points from the opponent's "
+                "opening before pushing back. Do NOT just restate your initial "
+                "opinion; engage with what they actually said."
+            )
+        else:
+            goal = (
+                f"Round {round_num} of {max_rounds} — focus on convergence. "
+                "Lead with the points of AGREEMENT you have already reached, "
+                "then narrow the remaining disagreements. Concede explicitly "
+                "where the opponent has changed your mind. Each round your "
+                "AGREEMENTS section should grow."
+            )
+
+        def label(i: int) -> str:
+            return "opening" if i == 0 else f"round {i}"
+
+        own_block = "\n\n".join(
+            f"[Your {label(i)} argument]\n{a}"
+            for i, a in enumerate(own_arguments)
+        )
+        opp_block = "\n\n".join(
+            f"[Opponent's {label(i)} argument]\n{a}"
+            for i, a in enumerate(opponent_arguments)
+        )
+
+        return (
+            f"[Topic]\n{topic}\n\n"
+            f"[Your role] {role}\n\n"
+            f"{own_block}\n\n"
+            f"{opp_block}\n\n"
+            f"[Goal for this round]\n{goal}"
+        )
 
     async def _check_consensus(
         self, ae1_text: str, ae2_text: str, ae1_role: str, ae2_role: str

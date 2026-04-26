@@ -42,17 +42,33 @@ async def _call_mcp_tool(tool: str, args: dict) -> str | None:
 def _extract_search_query(text: str, max_len: int = 80) -> str:
     """Extract the first meaningful claim from an argument as a search query.
 
-    Strips markdown formatting and returns the first substantive sentence
-    (up to max_len chars). Using the agent's own first claim — rather than
-    the orchestrator's prompt — produces a focused, evidence-relevant query.
+    Strips markdown formatting and skips deliberation section headers
+    (AGREEMENTS:, REFINEMENT:, etc.) so the query targets actual content,
+    not the structural label.
     """
     # Remove markdown headers, bullets, blockquotes
     clean = re.sub(r'^[#*\->\s]+', '', text, flags=re.MULTILINE).strip()
     # Remove inline markdown bold/italic markers
     clean = re.sub(r'[*_]{1,2}', '', clean).strip()
-    # Take first sentence (split on . ? ! or newline)
-    first_sentence = re.split(r'[.?!\n]', clean)[0].strip()
-    query = first_sentence if first_sentence else clean
+
+    # Walk lines, skipping section headers (short ALL-CAPS lines ending in ':')
+    content = ""
+    for raw_line in clean.split('\n'):
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.endswith(':') and len(line) <= 25 and line[:-1].replace(' ', '').isalpha():
+            continue
+        # Strip an inline section prefix like "AGREEMENTS: actual text..."
+        line = re.sub(r'^[A-Z][A-Z\s]{2,30}:\s*', '', line)
+        if line:
+            content = line
+            break
+    if not content:
+        content = clean
+
+    first_sentence = re.split(r'[.?!]', content)[0].strip()
+    query = first_sentence if first_sentence else content
     return query[:max_len]
 
 

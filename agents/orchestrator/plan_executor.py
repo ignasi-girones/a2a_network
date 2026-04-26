@@ -49,25 +49,86 @@ class PlanExecutionError(RuntimeError):
     """Raised when a plan cannot be executed (cycle, missing skill, etc.)."""
 
 
+def _own_agent_id(perspective: str | None) -> str | None:
+    """Extract 'ae1' or 'ae2' from a perspective string like 'ae1: round 1'.
+
+    Returns None if the perspective doesn't follow the ae1:/ae2: convention,
+    which signals this isn't a per-agent debate task.
+    """
+    if not perspective:
+        return None
+    p = perspective.strip().lower()
+    for tag in ("ae1", "ae2"):
+        if p == tag or p.startswith(f"{tag}:") or p.startswith(f"{tag} "):
+            return tag
+    return None
+
+
 def _build_subtask_prompt(
-    task: SubTask, dep_results: dict[str, str], goal: str
+    task: SubTask,
+    dep_results: dict[str, str],
+    goal: str,
+    plan_subtasks: dict[str, SubTask] | None = None,
 ) -> str:
     """Compose the prompt a worker will actually receive.
 
-    Includes:
-    - The global plan goal (useful for debate workers that need framing).
-    - The subtask's own description.
-    - Perspective hint if present.
-    - Formatted outputs of all `depends_on` predecessors.
+    For non-debate subtasks: a flat list of dep outputs prefixed by their id.
+    For debate subtasks (skill='debate' with an 'ae1:' / 'ae2:' perspective):
+    deps are split into "Your previous arguments" vs "Opponent's previous
+    arguments" so each agent receives the structured trajectory of the
+    deliberation — this is what enables convergence across rounds.
     """
+    own_agent = (
+        _own_agent_id(task.perspective)
+        if task.required_skill == "debate"
+        else None
+    )
+
     parts = [f"Goal: {goal}", f"Task: {task.description}"]
     if task.perspective:
         parts.append(f"Perspective: {task.perspective}")
-    if task.depends_on:
+
+    if not task.depends_on:
+        return "\n".join(parts)
+
+    if own_agent is None or plan_subtasks is None:
+        # Generic dep dump for non-debate tasks (or debate tasks the planner
+        # built without the ae1/ae2 convention — degraded but still works).
         parts.append("\nContext from previous steps:")
         for dep_id in task.depends_on:
             text = dep_results.get(dep_id, "").strip()
             parts.append(f"\n[{dep_id}]\n{text}")
+        return "\n".join(parts)
+
+    # Debate task: classify each dep as own / opponent / context.
+    own_block: list[str] = []
+    opp_block: list[str] = []
+    other_block: list[str] = []
+    for dep_id in task.depends_on:
+        dep_task = plan_subtasks.get(dep_id)
+        text = dep_results.get(dep_id, "").strip()
+        if not text:
+            continue
+        dep_agent = _own_agent_id(dep_task.perspective) if dep_task else None
+        label = (dep_task.perspective or dep_id) if dep_task else dep_id
+        block_line = f"\n[{label}]\n{text}"
+        if dep_agent is None:
+            other_block.append(block_line)
+        elif dep_agent == own_agent:
+            own_block.append(block_line)
+        else:
+            opp_block.append(block_line)
+
+    if other_block:
+        parts.append("\n[Shared context]")
+        parts.extend(other_block)
+    if own_block:
+        parts.append("\n[Your previous arguments]")
+        parts.extend(own_block)
+    if opp_block:
+        parts.append("\n[Opponent's arguments — respond to these]")
+        parts.extend(opp_block)
+
     return "\n".join(parts)
 
 
@@ -82,9 +143,24 @@ class PlanExecutor:
         self.registry = registry
         self.progress = progress or ProgressCallback()
 
-    async def execute(self, plan: TaskPlan) -> dict[str, str]:
-        """Run the plan; return {subtask_id: text_output} for all subtasks."""
-        results: dict[str, str] = {}
+    async def execute(
+        self,
+        plan: TaskPlan,
+        prior_results: dict[str, str] | None = None,
+        prior_subtasks: dict[str, SubTask] | None = None,
+    ) -> dict[str, str]:
+        """Run the plan; return {subtask_id: text_output} for all subtasks.
+
+        `prior_results` and `prior_subtasks` let the executor resolve
+        `depends_on` IDs that belong to a previous plan (used for extension
+        plans that continue an unfinished debate). They are merged into the
+        local context but only the subtasks of THIS plan are scheduled.
+        """
+        # Merge previous-plan context so deps in extension plans resolve.
+        results: dict[str, str] = dict(prior_results or {})
+        all_subtasks: dict[str, SubTask] = dict(prior_subtasks or {})
+        for t in plan.subtasks:
+            all_subtasks[t.id] = t
         pending: list[SubTask] = list(plan.subtasks)
 
         await self.progress.on_progress(
@@ -110,11 +186,16 @@ class PlanExecutor:
             )
 
             # Assign workers to ready tasks, round-robin per skill so parallel
-            # same-skill tasks land on different workers.
+            # same-skill tasks land on different workers. For debate tasks
+            # respect the ae1/ae2 perspective tag so each agent receives its
+            # own per-round subtasks (the round-robin default would shuffle
+            # them and break trajectory).
             assignments = await self._assign_workers(ready)
             batch_outputs = await asyncio.gather(
                 *[
-                    self._execute_subtask(t, assignments[t.id], results, plan.goal)
+                    self._execute_subtask(
+                        t, assignments[t.id], results, plan.goal, all_subtasks,
+                    )
                     for t in ready
                 ],
                 return_exceptions=True,
@@ -166,9 +247,10 @@ class PlanExecutor:
         worker: WorkerEntry,
         dep_results: dict[str, str],
         goal: str,
+        all_subtasks: dict[str, SubTask] | None = None,
     ) -> str:
         """Build the prompt, A2A-call the assigned worker, return the response."""
-        prompt = _build_subtask_prompt(task, dep_results, goal)
+        prompt = _build_subtask_prompt(task, dep_results, goal, all_subtasks)
 
         # Dispatch event carries everything the frontend needs to render the
         # node transitioning to "running": worker id, required skill,
@@ -200,11 +282,15 @@ class PlanExecutor:
     async def _assign_workers(
         self, ready: list[SubTask]
     ) -> dict[str, WorkerEntry]:
-        """Assign a WorkerEntry to each ready subtask via round-robin per skill.
+        """Assign a WorkerEntry to each ready subtask.
+
+        Default rule: round-robin across all workers advertising the skill.
+        Override for debate tasks: if `perspective` starts with 'ae1:' / 'ae2:',
+        pin the task to the worker with that agent_id when available — this
+        keeps each agent's trajectory on a single LLM/provider across rounds.
 
         Raises PlanExecutionError if any required skill has zero workers.
         """
-        # Group ready tasks by skill.
         by_skill: dict[str, list[SubTask]] = defaultdict(list)
         for t in ready:
             by_skill[t.required_skill].append(t)
@@ -217,7 +303,15 @@ class PlanExecutor:
                     f"No worker in registry advertises skill {skill!r} "
                     f"(needed by subtasks {[t.id for t in tasks]})"
                 )
-            for i, t in enumerate(tasks):
+            by_id = {w.agent_id: w for w in workers}
+            unpinned: list[SubTask] = []
+            for t in tasks:
+                tag = _own_agent_id(t.perspective) if skill == "debate" else None
+                if tag and tag in by_id:
+                    assignments[t.id] = by_id[tag]
+                else:
+                    unpinned.append(t)
+            for i, t in enumerate(unpinned):
                 assignments[t.id] = workers[i % len(workers)]
         return assignments
 
