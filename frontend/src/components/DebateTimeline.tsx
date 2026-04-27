@@ -30,6 +30,14 @@ function getEventStyle(event: DebateEvent) {
       labelColor: 'bg-emerald-600',
     };
   }
+  if (workerId === 'ae3' || agent === 'ae3') {
+    return {
+      align: 'self-center',
+      bg: 'bg-fuchsia-50 border-fuchsia-200',
+      label: perspective ? `AE3 · ${perspective}` : 'AE3 · neutral',
+      labelColor: 'bg-fuchsia-600',
+    };
+  }
   if (workerId === 'normalizer') {
     return {
       align: 'self-center',
@@ -56,8 +64,24 @@ function getEventStyle(event: DebateEvent) {
     };
   }
 
+  if (stage === 'agent_positions') {
+    return {
+      align: 'self-center',
+      bg: 'bg-cyan-50 border-cyan-200',
+      label: 'Posiciones',
+      labelColor: 'bg-cyan-600',
+    };
+  }
+  if (stage === 'consensus_check' || stage === 'consensus' || stage === 'no_consensus') {
+    return {
+      align: 'self-center',
+      bg: 'bg-teal-50 border-teal-200',
+      label: 'Consenso',
+      labelColor: 'bg-teal-600',
+    };
+  }
+
   if (
-    stage === 'consensus' ||
     stage === 'complete' ||
     stage === 'plan_complete' ||
     stage === 'synthesize'
@@ -137,9 +161,9 @@ export function DebateTimeline({ events, plan }: Props) {
                 >
                   {style.label}
                 </span>
-                {event.data?.round && (
+                {typeof event.data?.round === 'number' && (
                   <span className="text-[10px] text-gray-500">
-                    Ronda {event.data.round}
+                    {event.data.round === 0 ? 'apertura' : `Ronda ${event.data.round}`}
                   </span>
                 )}
                 {event.data?.required_skill && !event.data?.worker_id && (
@@ -162,6 +186,42 @@ export function DebateTimeline({ events, plan }: Props) {
                     <Markdown>{event.data!.text!}</Markdown>
                   </div>
                 </details>
+              )}
+
+              {/* Position scores (agent_positions / consensus_check) */}
+              {event.data?.positions && (
+                <div className="mt-2 flex flex-wrap gap-2 text-[10px]">
+                  {(['ae1', 'ae2', 'ae3'] as const).map((tag) => {
+                    const v = event.data?.positions?.[tag];
+                    if (v === undefined) return null;
+                    const color =
+                      tag === 'ae1'
+                        ? 'bg-blue-100 text-blue-700'
+                        : tag === 'ae2'
+                        ? 'bg-emerald-100 text-emerald-700'
+                        : 'bg-fuchsia-100 text-fuchsia-700';
+                    return (
+                      <span
+                        key={tag}
+                        className={`${color} px-1.5 py-0.5 rounded font-mono`}
+                      >
+                        {tag.toUpperCase()}: {v.toFixed(2)}
+                      </span>
+                    );
+                  })}
+                  {typeof event.data?.agreement_score === 'number' && (
+                    <span className="bg-teal-100 text-teal-700 px-1.5 py-0.5 rounded font-mono">
+                      consenso: {event.data.agreement_score.toFixed(2)}
+                    </span>
+                  )}
+                </div>
+              )}
+
+              {/* Consensus reasoning (when present) */}
+              {event.data?.reason && event.stage !== 'tool_use' && (
+                <p className="mt-1 text-[10px] text-gray-500 italic">
+                  {event.data.reason}
+                </p>
               )}
 
               {/* Tool use info */}

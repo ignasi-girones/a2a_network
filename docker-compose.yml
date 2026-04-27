@@ -56,6 +56,8 @@ services:
         condition: service_healthy
       ae2:
         condition: service_healthy
+      ae3:
+        condition: service_healthy
       feedback:
         condition: service_healthy
     healthcheck:
@@ -114,6 +116,25 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8083/.well-known/agent-card.json"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+  ae3:
+    <<: *backend-base
+    command: python -m agents.specialized --port 8087 --agent-id ae3
+    environment:
+      ORCHESTRATOR_HOST: orchestrator
+      SELF_HOST: ae3
+      MCP_HOST: mcp-tools
+    ports:
+      - "8087:8087"
+    depends_on:
+      mcp-tools:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8087/.well-known/agent-card.json"]
       interval: 30s
       timeout: 5s
       start_period: 20s

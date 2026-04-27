@@ -67,56 +67,60 @@ Return ONLY valid JSON with this exact shape:
 
 ═══════ PATTERN: deliberative questions (opinions, decisions, comparisons) ═══════
 When the user asks something with multiple defensible answers (should we, which
-is better, is X right, etc.), generate an ITERATIVE DEBATE PLAN with rounds.
+is better, is X right, etc.), generate a MINIMAL OPENING PLAN. The orchestrator
+runs a separate consensus loop that evaluates the agents' positions after each
+exchange and asks you for SYNTHESIS EXTENSIONS only if convergence has not
+been reached. This means:
+  - You do NOT plan multiple rounds up front.
+  - You do NOT include a `format_verdict` step. The orchestrator synthesizes
+    the final answer itself from the latest positions of all three agents once
+    the consensus loop ends (either by convergence or by hitting the round cap).
 
-Required structure:
+Required structure (exactly 4 subtasks):
 1. ONE `normalize_input` subtask first (no deps).
-2. TWO parallel `debate` subtasks for INITIAL OPINIONS (deps: [t1]):
-   - One with `perspective` starting with "ae1: <role + stance>"
-   - One with `perspective` starting with "ae2: <opposing role + stance>"
-   - The two roles MUST be CONTRASTING (e.g. DevOps Engineer vs Team Lead).
-3. ALTERNATING ROUNDS of `debate` subtasks. For each round R from 1 to N (N=2):
-   - First an `ae2` subtask (deps: both opinions + previous round's outputs)
-   - Then an `ae1` subtask (deps: the `ae2` round-R subtask + everything before)
-4. ONE `format_verdict` subtask depending on ALL debate subtasks.
+2. THREE parallel `debate` subtasks for INITIAL OPINIONS (deps: [t1]):
+   - AE1: an advocate for one side ("ae1: <role + stance>")
+   - AE2: an advocate for the opposing side ("ae2: <opposing role + stance>")
+   - AE3: a NEUTRAL moderator / third-perspective voice
+     ("ae3: Mediator, neutral — finds common ground").
+   The first two roles MUST be CONTRASTING (e.g. DevOps Engineer vs Team
+   Lead). AE3 must NOT pick a side — it observes both, summarises strongest
+   shared points, and proposes integrative framings.
 
 For each `debate` subtask, the `description` MUST include:
    - "ROLE: <the role>"
-   - "PERSPECTIVE: <the stance>"
-   - "ROUND: <opening | round 1 | round 2 of 2 (FINAL — synthesize)>"
-   - "GOAL: <argue your stance / find common ground / propose unified answer>"
+   - "PERSPECTIVE: <the stance — for AE3 say 'neutral mediator'>"
+   - "ROUND: opening"
+   - "GOAL: <for AE1/AE2> state your initial position clearly so the others
+      can respond to it — but stay open to revising it in later rounds.
+      <for AE3> identify likely shared ground in advance and frame the
+      tradeoffs each side will face."
    - "Format: AGREEMENTS: ... / REFINEMENT: ..."
 
 CRITICAL — `perspective` field convention for debate subtasks:
    - Initial opinion AE1: "ae1: <role>, <stance>"
    - Initial opinion AE2: "ae2: <role>, <stance>"
-   - Round-R AE1: "ae1: round <R>"
-   - Round-R AE2: "ae2: round <R>"
-   The "ae1:" / "ae2:" prefix is MANDATORY — the executor uses it to label
-   each agent's own prior arguments vs the opponent's when assembling context.
-
-The FINAL round's `description` MUST instruct the agent to drop the
-adversarial framing and propose a single unified answer ("FINAL — synthesize").
+   - Initial opinion AE3: "ae3: Mediator, neutral"
+   The "ae1:" / "ae2:" / "ae3:" prefix is MANDATORY — the executor uses it to
+   label each agent's own prior arguments vs the others' when assembling
+   context, and the consensus loop uses it to identify each agent's latest
+   position.
 
 ═══════ PATTERN: factual / single-answer questions ═══════
 If the request has one obvious answer (definitions, calculations, lookups),
 do NOT use the debate pattern. Use a short pipeline: normalize → one or two
 analytic steps → format_verdict. No rounds.
 
-═══════ EXAMPLE: deliberative plan with 2 rounds ═══════
+═══════ EXAMPLE: deliberative opening plan (4 subtasks) ═══════
 {
   "goal": "Compare remote vs in-person work for software teams",
   "subtasks": [
     {"id":"t1","description":"Normalize the request into structured JSON","required_skill":"normalize_input","depends_on":[],"perspective":null},
-    {"id":"t2","description":"ROLE: DevOps Engineer. PERSPECTIVE: Remote work boosts productivity. ROUND: opening. GOAL: state your initial position. Format: AGREEMENTS: / REFINEMENT:","required_skill":"debate","depends_on":["t1"],"perspective":"ae1: DevOps Engineer, pro-remote"},
-    {"id":"t3","description":"ROLE: Team Lead. PERSPECTIVE: In-person work strengthens cohesion. ROUND: opening. GOAL: state your initial position. Format: AGREEMENTS: / REFINEMENT:","required_skill":"debate","depends_on":["t1"],"perspective":"ae2: Team Lead, pro-onsite"},
-    {"id":"t4","description":"ROLE: Team Lead. ROUND: round 1 of 2. GOAL: respond to AE1's opening — concede valid points first, then refine. Format: AGREEMENTS: / REFINEMENT:","required_skill":"debate","depends_on":["t2","t3"],"perspective":"ae2: round 1"},
-    {"id":"t5","description":"ROLE: DevOps Engineer. ROUND: round 1 of 2. GOAL: respond to AE2's round 1 — concede valid points first, then refine. Format: AGREEMENTS: / REFINEMENT:","required_skill":"debate","depends_on":["t2","t3","t4"],"perspective":"ae1: round 1"},
-    {"id":"t6","description":"ROLE: Team Lead. ROUND: round 2 of 2 (FINAL — synthesize). GOAL: drop the adversarial framing and propose a unified answer integrating both sides. Format: AGREEMENTS: / REFINEMENT:","required_skill":"debate","depends_on":["t2","t3","t4","t5"],"perspective":"ae2: round 2"},
-    {"id":"t7","description":"ROLE: DevOps Engineer. ROUND: round 2 of 2 (FINAL — synthesize). GOAL: drop the adversarial framing and propose a unified answer integrating both sides. Format: AGREEMENTS: / REFINEMENT:","required_skill":"debate","depends_on":["t2","t3","t4","t5","t6"],"perspective":"ae1: round 2"},
-    {"id":"t8","description":"Format the final verdict synthesizing all debate rounds","required_skill":"format_verdict","depends_on":["t2","t3","t4","t5","t6","t7"],"perspective":null}
+    {"id":"t2","description":"ROLE: DevOps Engineer. PERSPECTIVE: Remote work boosts productivity. ROUND: opening. GOAL: state your initial position clearly so the others can respond to it — but stay open to revising it in later rounds. Format: AGREEMENTS: / REFINEMENT:","required_skill":"debate","depends_on":["t1"],"perspective":"ae1: DevOps Engineer, pro-remote"},
+    {"id":"t3","description":"ROLE: Team Lead. PERSPECTIVE: In-person work strengthens cohesion. ROUND: opening. GOAL: state your initial position clearly so the others can respond to it — but stay open to revising it in later rounds. Format: AGREEMENTS: / REFINEMENT:","required_skill":"debate","depends_on":["t1"],"perspective":"ae2: Team Lead, pro-onsite"},
+    {"id":"t4","description":"ROLE: Mediator. PERSPECTIVE: neutral mediator. ROUND: opening. GOAL: identify likely shared ground in advance and frame the tradeoffs each side will face. Do NOT advocate for either side. Format: AGREEMENTS: / REFINEMENT:","required_skill":"debate","depends_on":["t1"],"perspective":"ae3: Mediator, neutral"}
   ],
-  "max_workers": 2
+  "max_workers": 3
 }
 """
 
@@ -129,25 +133,50 @@ as before. You may drop or rewrite the failed subtask, or route around it.
 
 
 EXTEND_FOR_CONSENSUS_SYSTEM_PROMPT = """\
-A debate plan has finished executing but the two agents have NOT yet reached
-consensus. You must produce a SHORT EXTENSION PLAN with 2-4 additional
-subtasks that continue the debate from where it left off and force convergence.
+A debate has just finished its latest exchange and the THREE agents (ae1, ae2,
+ae3) have NOT yet reached consensus. You must produce ONE more synthesis round
+as a SMALL EXTENSION PLAN — exactly THREE additional `debate` subtasks (one
+per agent) that continue from the latest positions and push toward convergence.
 
-Return ONLY valid JSON with the same shape as a normal plan. Rules for the
-extension:
-- IDs must NOT collide with the original plan. Use prefix "x" (x1, x2, ...).
-- All `debate` subtasks in the extension MUST be SYNTHESIS rounds. The
-  description must instruct the agent to drop adversarial framing, lead
-  with shared ground, and propose a unified answer.
-- Use `perspective` with the "ae1: ..." / "ae2: ..." convention exactly as
-  before, with round labels like "ae1: synthesis" / "ae2: synthesis".
-- `depends_on` for each new subtask MUST include the latest existing debate
-  subtask IDs from the original plan so context flows in (you will be told
-  which IDs those are).
-- End with a `format_verdict` subtask that depends on all NEW debate subtasks
-  AND the original final-round subtasks.
-- The original plan's normalize step must NOT be repeated.
-- Keep the extension small (4-6 subtasks max).
+Return ONLY valid JSON with EXACTLY this shape (all top-level fields required):
+{
+  "goal": "<restate the original deliberation goal>",
+  "subtasks": [ ...three debate subtasks... ],
+  "max_workers": 3
+}
+
+Rules:
+- IDs must NOT collide with existing IDs. Use prefix "x" (e.g. x1, x2, x3).
+- Produce EXACTLY THREE subtasks, all `required_skill = "debate"`. No
+  `normalize_input`, no `format_verdict` — the orchestrator handles the final
+  synthesis itself once consensus is reached or the round budget is exhausted.
+- All three subtasks MUST be SYNTHESIS rounds: instruct each agent to lead
+  with shared ground (use the AGREEMENTS section heavily), concede stronger
+  points the others made, and converge toward a unified answer rather than
+  defend the original stance. AE3 (the mediator) should explicitly propose a
+  bridging answer combining what AE1 and AE2 each got right.
+- Use `perspective` with the "ae1: ..." / "ae2: ..." / "ae3: ..." convention.
+  Use round labels like "ae1: synthesis 1", "ae2: synthesis 1",
+  "ae3: synthesis 1" (or 2, 3, ...) reflecting how many synthesis rounds have
+  already happened.
+- `depends_on` for each new subtask MUST include the latest debate subtask IDs
+  for each of the three agents (you will be told which IDs those are) so each
+  agent sees the most recent arguments from all peers.
+- The orchestrator will tell you the consensus reason — address that gap
+  explicitly in the new subtasks' descriptions.
+
+═══════ EXAMPLE: synthesis extension (3 subtasks) ═══════
+Given the original plan ended with debate IDs t2 (ae1), t3 (ae2), t4 (ae3),
+and the consensus reason was "agents disagree on weighting of metric X":
+{
+  "goal": "Reach a unified answer on remote vs in-person work",
+  "subtasks": [
+    {"id":"x1","description":"ROLE: DevOps Engineer. ROUND: synthesis 1. GOAL: lead with points you already accept from the others (AGREEMENTS heavy). Address the gap on metric X. Propose a unified position. Format: AGREEMENTS: / REFINEMENT:","required_skill":"debate","depends_on":["t2","t3","t4"],"perspective":"ae1: synthesis 1"},
+    {"id":"x2","description":"ROLE: Team Lead. ROUND: synthesis 1. GOAL: lead with points you already accept from the others (AGREEMENTS heavy). Address the gap on metric X. Propose a unified position. Format: AGREEMENTS: / REFINEMENT:","required_skill":"debate","depends_on":["t2","t3","t4","x1"],"perspective":"ae2: synthesis 1"},
+    {"id":"x3","description":"ROLE: Mediator. ROUND: synthesis 1. GOAL: propose an explicit bridging answer that combines AE1's and AE2's strongest points and resolves the metric-X gap. Stay neutral. Format: AGREEMENTS: / REFINEMENT:","required_skill":"debate","depends_on":["t2","t3","t4","x1","x2"],"perspective":"ae3: synthesis 1"}
+  ],
+  "max_workers": 3
+}
 """
 
 
@@ -178,7 +207,12 @@ def _format_worker_catalog(workers: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def _parse_plan(raw: str, known_skills: set[str] | None = None) -> TaskPlan:
+def _parse_plan(
+    raw: str,
+    known_skills: set[str] | None = None,
+    default_goal: str | None = None,
+    external_ids: set[str] | None = None,
+) -> TaskPlan:
     """Parse and validate a planner LLM response into a TaskPlan.
 
     Raises ValueError on malformed JSON or invalid plan structure: unknown
@@ -186,11 +220,22 @@ def _parse_plan(raw: str, known_skills: set[str] | None = None) -> TaskPlan:
     `known_skills` is provided — `required_skill` values that aren't in
     the catalog.
 
+    `default_goal` is used to backfill a missing `goal` field — useful for
+    extension plans, which reuse the original plan's goal and where models
+    sometimes omit the field.
+
+    `external_ids` are subtask IDs that exist in a previous plan and are
+    therefore valid `depends_on` targets even though they aren't declared
+    in this plan — used when validating extension plans whose new subtasks
+    depend on the original plan's debate outputs.
+
     The skill check lives here (not in the executor) so the Planner can
     detect hallucinated skills and re-prompt the LLM with a corrective
     message before burning a full execution attempt.
     """
     data = json.loads(raw)
+    if default_goal is not None and not data.get("goal"):
+        data["goal"] = default_goal
     plan = TaskPlan(**data)
 
     ids = [t.id for t in plan.subtasks]
@@ -198,7 +243,7 @@ def _parse_plan(raw: str, known_skills: set[str] | None = None) -> TaskPlan:
         raise ValueError("Plan contains no subtasks")
     if len(set(ids)) != len(ids):
         raise ValueError(f"Duplicate subtask IDs: {ids}")
-    known = set(ids)
+    known = set(ids) | (external_ids or set())
     for t in plan.subtasks:
         for dep in t.depends_on:
             if dep not in known:
@@ -371,10 +416,10 @@ class Planner:
         latest_per_agent: dict[str, str] = {}
         for t in debate_tasks:
             persp = (t.perspective or "").lower()
-            if persp.startswith("ae1"):
-                latest_per_agent["ae1"] = t.id
-            elif persp.startswith("ae2"):
-                latest_per_agent["ae2"] = t.id
+            for tag in ("ae1", "ae2", "ae3"):
+                if persp.startswith(tag):
+                    latest_per_agent[tag] = t.id
+                    break
         latest_ids = list(latest_per_agent.values())
         existing_ids = [t.id for t in original.subtasks]
 
@@ -412,7 +457,12 @@ class Planner:
                 response_format={"type": "json_object"},
             )
             try:
-                ext = _parse_plan(raw, known_skills=known_skills)
+                ext = _parse_plan(
+                    raw,
+                    known_skills=known_skills,
+                    default_goal=original.goal,
+                    external_ids=set(existing_ids),
+                )
                 # Reject ID collisions with the original plan.
                 clash = {t.id for t in ext.subtasks} & set(existing_ids)
                 if clash:
@@ -426,11 +476,20 @@ class Planner:
                 )
                 return ext
             except (json.JSONDecodeError, ValueError) as e:
-                logger.warning("Extension plan parse failed (attempt %d): %s", attempt + 1, e)
+                logger.warning(
+                    "Extension plan parse failed (attempt %d): %s\nRaw response: %s",
+                    attempt + 1, e, raw[:1500],
+                )
                 messages.append({"role": "assistant", "content": raw})
                 messages.append({
                     "role": "user",
-                    "content": f"That response was invalid: {e}. Return ONLY valid JSON.",
+                    "content": (
+                        f"That response was invalid: {e}. Return ONLY valid JSON "
+                        f"with the exact top-level shape "
+                        f'{{"goal": "...", "subtasks": [...], "max_workers": <int>}}. '
+                        f"All three top-level fields are MANDATORY. Do NOT wrap the "
+                        f"plan in any other object."
+                    ),
                 })
 
         raise RuntimeError("Planner failed to produce a valid extension plan")

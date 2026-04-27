@@ -24,6 +24,9 @@ python -m agents.specialized --port 8082 --agent-id ae1 &
 echo "Starting Specialized Agent AE2 (port 8083)..."
 python -m agents.specialized --port 8083 --agent-id ae2 &
 
+echo "Starting Specialized Agent AE3 (port 8087, neutral mediator)..."
+python -m agents.specialized --port 8087 --agent-id ae3 &
+
 sleep 2
 
 echo "Starting Orchestrator Agent (port 8080)..."

@@ -49,16 +49,20 @@ class PlanExecutionError(RuntimeError):
     """Raised when a plan cannot be executed (cycle, missing skill, etc.)."""
 
 
-def _own_agent_id(perspective: str | None) -> str | None:
-    """Extract 'ae1' or 'ae2' from a perspective string like 'ae1: round 1'.
+DEBATE_AGENT_TAGS = ("ae1", "ae2", "ae3")
 
-    Returns None if the perspective doesn't follow the ae1:/ae2: convention,
+
+def _own_agent_id(perspective: str | None) -> str | None:
+    """Extract 'ae1', 'ae2', or 'ae3' from a perspective string like
+    'ae1: round 1'.
+
+    Returns None if the perspective doesn't follow the aeN:/ convention,
     which signals this isn't a per-agent debate task.
     """
     if not perspective:
         return None
     p = perspective.strip().lower()
-    for tag in ("ae1", "ae2"):
+    for tag in DEBATE_AGENT_TAGS:
         if p == tag or p.startswith(f"{tag}:") or p.startswith(f"{tag} "):
             return tag
     return None
@@ -100,10 +104,11 @@ def _build_subtask_prompt(
             parts.append(f"\n[{dep_id}]\n{text}")
         return "\n".join(parts)
 
-    # Debate task: classify each dep as own / opponent / context.
+    # Debate task: classify each dep as own / other-agent / shared context.
+    # With 3 agents, "opponent" is plural — every other ae* agent counts.
     own_block: list[str] = []
-    opp_block: list[str] = []
-    other_block: list[str] = []
+    others_blocks: dict[str, list[str]] = {}
+    shared_block: list[str] = []
     for dep_id in task.depends_on:
         dep_task = plan_subtasks.get(dep_id)
         text = dep_results.get(dep_id, "").strip()
@@ -113,21 +118,28 @@ def _build_subtask_prompt(
         label = (dep_task.perspective or dep_id) if dep_task else dep_id
         block_line = f"\n[{label}]\n{text}"
         if dep_agent is None:
-            other_block.append(block_line)
+            shared_block.append(block_line)
         elif dep_agent == own_agent:
             own_block.append(block_line)
         else:
-            opp_block.append(block_line)
+            others_blocks.setdefault(dep_agent, []).append(block_line)
 
-    if other_block:
+    if shared_block:
         parts.append("\n[Shared context]")
-        parts.extend(other_block)
+        parts.extend(shared_block)
     if own_block:
         parts.append("\n[Your previous arguments]")
         parts.extend(own_block)
-    if opp_block:
-        parts.append("\n[Opponent's arguments — respond to these]")
-        parts.extend(opp_block)
+    for tag in DEBATE_AGENT_TAGS:
+        if tag == own_agent:
+            continue
+        block = others_blocks.get(tag)
+        if not block:
+            continue
+        parts.append(
+            f"\n[{tag.upper()}'s arguments — respond to these]"
+        )
+        parts.extend(block)
 
     return "\n".join(parts)
 
@@ -285,9 +297,10 @@ class PlanExecutor:
         """Assign a WorkerEntry to each ready subtask.
 
         Default rule: round-robin across all workers advertising the skill.
-        Override for debate tasks: if `perspective` starts with 'ae1:' / 'ae2:',
-        pin the task to the worker with that agent_id when available — this
-        keeps each agent's trajectory on a single LLM/provider across rounds.
+        Override for debate tasks: if `perspective` starts with one of the
+        recognised debate tags ('ae1:' / 'ae2:' / 'ae3:'), pin the task to
+        the worker with that agent_id when available — this keeps each
+        agent's trajectory on a single LLM/provider across rounds.
 
         Raises PlanExecutionError if any required skill has zero workers.
         """

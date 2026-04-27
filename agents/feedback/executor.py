@@ -18,35 +18,45 @@ from common.llm_provider import llm_complete
 logger = logging.getLogger(__name__)
 
 FEEDBACK_PROMPT = """\
-Eres un analista de debates. Recibirás un resumen en JSON de un debate estructurado \
-entre dos agentes con roles y perspectivas diferentes.
+Eres un analista de debates. Recibirás los argumentos finales de un debate \
+estructurado entre tres agentes (AE1, AE2 y AE3, donde AE3 actúa como \
+mediador neutral).
 
 IMPORTANTE: Responde SIEMPRE en castellano, independientemente del idioma del debate \
 de entrada. Si el debate viene en inglés, traduce los argumentos al castellano en tu informe.
 
-Tu tarea es producir un informe claro y bien formateado para un lector humano. \
-Estructura tu respuesta con estas secciones (mantén los títulos exactamente así):
+Produce un informe claro y bien formateado para un lector humano. Mantén los \
+títulos de sección EXACTAMENTE así:
 
 ## Resumen ejecutivo
-Una visión general en 2-3 frases del tema del debate y su desenlace.
+Visión general en 2-3 frases del tema del debate y su desenlace.
 
 ## Participantes
-- Quién era cada agente y qué perspectiva representaba.
+- AE1, AE2 y AE3: rol y perspectiva de cada uno (señala que AE3 es el mediador neutral).
 
 ## Argumentos clave
-Resume los argumentos más sólidos de cada lado.
+Resume en pocas líneas los argumentos más sólidos de cada agente.
 
 ## Puntos de acuerdo
-¿En qué convergieron los agentes?
+¿En qué convergieron los tres agentes?
 
 ## Puntos de desacuerdo
-¿En qué divergieron y por qué?
+¿Qué disensos quedaron sin resolver y por qué?
 
 ## Veredicto final
-A la luz del debate, ¿cuál es la conclusión más equilibrada?
+A la luz del debate, ¿cuál es la conclusión más equilibrada? Si AE3 propuso \
+una síntesis viable, recógela aquí.
 
-## Nivel de confianza
-¿Cómo de fiable es este veredicto? (Alto / Medio / Bajo) y por qué.
+## Estado del debate
+Esta sección NO trata sobre la calidad del debate ni sobre tu nivel de \
+confianza. Analiza brevemente (3-5 frases) si el debate **quedó concluido con \
+un consenso real** entre los agentes, o si **no llegaron a un acuerdo común** \
+y persisten posiciones encontradas. Justifica usando los puntos de acuerdo \
+y desacuerdo anteriores. Empieza la sección con una etiqueta clara en \
+**negrita** entre estas tres opciones:
+  - **Consenso alcanzado** — los tres convergieron en una respuesta común.
+  - **Consenso parcial** — hay terreno común pero quedan disensos relevantes.
+  - **Sin consenso** — siguen en posiciones contrapuestas.
 
 Usa un tono profesional pero accesible. Todo el texto debe estar en castellano."""
 

@@ -263,29 +263,47 @@ export function DebateGraph({ plan, runtime }: Props) {
                   {truncate(t.description, 30)}
                 </text>
 
-                {/* Perspective tag (if present) */}
-                {t.perspective && (
-                  <g transform={`translate(12, 52)`}>
-                    <rect
-                      x={0}
-                      y={0}
-                      width={44}
-                      height={14}
-                      rx={3}
-                      fill={t.perspective === 'pro' ? '#dbeafe' : '#fee2e2'}
-                    />
-                    <text
-                      x={22}
-                      y={10}
-                      fontSize={9}
-                      fontWeight={600}
-                      textAnchor="middle"
-                      fill={t.perspective === 'pro' ? '#1e40af' : '#991b1b'}
-                    >
-                      {t.perspective}
-                    </text>
-                  </g>
-                )}
+                {/* Perspective tag (if present) — colour by ae1/ae2/ae3 prefix */}
+                {t.perspective && (() => {
+                  const p = t.perspective.toLowerCase();
+                  let bg = '#f3f4f6';
+                  let fg = '#374151';
+                  if (p.startsWith('ae1')) {
+                    bg = '#dbeafe'; fg = '#1e40af';
+                  } else if (p.startsWith('ae2')) {
+                    bg = '#d1fae5'; fg = '#047857';
+                  } else if (p.startsWith('ae3')) {
+                    bg = '#f5d0fe'; fg = '#86198f';
+                  } else if (p === 'pro') {
+                    bg = '#dbeafe'; fg = '#1e40af';
+                  } else if (p === 'con') {
+                    bg = '#fee2e2'; fg = '#991b1b';
+                  }
+                  const display = truncate(t.perspective, 18);
+                  const w = Math.max(36, display.length * 6 + 8);
+                  return (
+                    <g transform={`translate(12, 52)`}>
+                      <rect
+                        x={0}
+                        y={0}
+                        width={w}
+                        height={14}
+                        rx={3}
+                        fill={bg}
+                      />
+                      <text
+                        x={w / 2}
+                        y={10}
+                        fontSize={9}
+                        fontWeight={600}
+                        textAnchor="middle"
+                        fill={fg}
+                      >
+                        {display}
+                      </text>
+                    </g>
+                  );
+                })()}
 
                 {/* Status badge (bottom-right) */}
                 <g transform={`translate(${NODE_W - 78}, ${NODE_H - 22})`}>
@@ -336,17 +354,19 @@ export function DebateGraph({ plan, runtime }: Props) {
               <span className="font-mono text-[10px] text-gray-400">
                 ({selectedTask.id})
               </span>
-              {selectedTask.perspective && (
-                <span
-                  className={`text-[10px] px-1.5 py-0.5 rounded font-semibold ${
-                    selectedTask.perspective === 'pro'
-                      ? 'bg-blue-100 text-blue-700'
-                      : 'bg-red-100 text-red-700'
-                  }`}
-                >
-                  {selectedTask.perspective}
-                </span>
-              )}
+              {selectedTask.perspective && (() => {
+                const p = selectedTask.perspective.toLowerCase();
+                let cls = 'bg-gray-100 text-gray-700';
+                if (p.startsWith('ae1') || p === 'pro') cls = 'bg-blue-100 text-blue-700';
+                else if (p.startsWith('ae2')) cls = 'bg-emerald-100 text-emerald-700';
+                else if (p.startsWith('ae3')) cls = 'bg-fuchsia-100 text-fuchsia-700';
+                else if (p === 'con') cls = 'bg-red-100 text-red-700';
+                return (
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold ${cls}`}>
+                    {selectedTask.perspective}
+                  </span>
+                );
+              })()}
             </div>
             <button
               onClick={() => setSelected(null)}

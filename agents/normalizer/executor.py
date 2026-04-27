@@ -53,6 +53,7 @@ class NormalizerExecutor(AgentExecutor):
         ]
 
         # Try up to 2 times to get valid JSON
+        result: str | None = None
         for attempt in range(2):
             try:
                 result = await llm_complete(
@@ -64,26 +65,33 @@ class NormalizerExecutor(AgentExecutor):
                 # Validate it's parseable JSON
                 json.loads(result)
                 break
-            except (json.JSONDecodeError, Exception) as e:
-                logger.warning("Attempt %d failed: %s", attempt + 1, e)
-                if attempt == 1:
-                    # Fallback: minimal structure
-                    result = json.dumps({
-                        "topic": user_input,
-                        "domain": "general",
-                        "question_type": "analysis",
-                        "constraints": [],
-                        "suggested_perspectives": [
-                            "Advocate perspective",
-                            "Critical perspective",
-                        ],
-                    })
-                else:
+            except json.JSONDecodeError as e:
+                logger.warning("Attempt %d invalid JSON: %s", attempt + 1, e)
+                if attempt == 0 and result is not None:
                     messages.append({"role": "assistant", "content": result})
                     messages.append({
                         "role": "user",
                         "content": "That was not valid JSON. Please return ONLY a valid JSON object.",
                     })
+                    result = None
+            except Exception as e:
+                logger.warning("Attempt %d LLM call failed: %s", attempt + 1, e)
+                result = None
+
+        if result is None:
+            # All attempts failed — fall back to a minimal structure so the
+            # downstream debate still has something to work with.
+            logger.warning("Normalizer falling back to minimal structure")
+            result = json.dumps({
+                "topic": user_input,
+                "domain": "general",
+                "question_type": "analysis",
+                "constraints": [],
+                "suggested_perspectives": [
+                    "Advocate perspective",
+                    "Critical perspective",
+                ],
+            })
 
         # Send completed response
         await event_queue.enqueue_event(

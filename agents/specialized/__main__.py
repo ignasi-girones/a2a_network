@@ -35,8 +35,17 @@ def main():
     agent_id = args.agent_id
     url = settings.own_url(port)
 
-    # Select model based on agent ID
-    model = settings.ae1_model if agent_id == "ae1" else settings.ae2_model
+    # Select model based on agent ID. Dynamic spawned workers (e.g.
+    # "dyn_debate_3") fall back to the AE2 model since they are spun up to
+    # cover overflow demand and that model is the cheapest reliable default.
+    if agent_id == "ae1":
+        model = settings.ae1_model
+    elif agent_id == "ae2":
+        model = settings.ae2_model
+    elif agent_id == "ae3":
+        model = settings.ae3_model
+    else:
+        model = settings.ae2_model
 
     # Create mutable state
     state = AgentState(agent_id=agent_id)

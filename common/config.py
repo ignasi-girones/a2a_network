@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     feedback_port: int = 8084
     mcp_port: int = 8085
     frontend_port: int = 8086
+    ae3_port: int = 8087
 
     # Hostnames — in local dev everything is on localhost, but when deploying
     # to Docker Compose / Kubernetes each agent reaches the orchestrator via
@@ -44,6 +45,7 @@ class Settings(BaseSettings):
     normalizer_model: str = "gemini/gemini-2.5-flash"
     ae1_model: str = "mistral/mistral-large-latest"
     ae2_model: str = "cerebras/qwen-3-235b-a22b-instruct-2507"
+    ae3_model: str = "groq/llama-3.1-8b-instant"
     feedback_model: str = "ollama/qwen2.5:14b"
 
     # Ollama

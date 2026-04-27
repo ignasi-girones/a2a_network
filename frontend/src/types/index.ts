@@ -23,6 +23,30 @@ export interface SubtaskRuntime {
   error?: string;
 }
 
+// ── Per-round agent position scores (0..1 axis where 0 = AE1's stance,
+//     1 = AE2's stance, 0.5 = neutral). Emitted by the consensus loop ──
+export interface AgentPositions {
+  ae1?: number;
+  ae2?: number;
+  ae3?: number;
+}
+
+export interface AgentPositionsSample {
+  round: number;
+  positions: AgentPositions;
+  agreement_score?: number;
+}
+
+// ── Snapshot of the consensus evaluation after a given round ──
+export interface ConsensusSnapshot {
+  round: number;
+  agreement_score: number;
+  reason?: string;
+  positions?: AgentPositions;
+  shared_points: string[];
+  remaining_disagreements: string[];
+}
+
 // ── Events emitted by the orchestrator's ProgressCallback ──
 export interface DebateEvent {
   stage: string;
@@ -41,9 +65,17 @@ export interface DebateEvent {
     text?: string;
     error?: string;
 
+    // Consensus / position tracking
+    round?: number;
+    positions?: AgentPositions;
+    agreement_score?: number;
+    reason?: string;
+    shared_points?: string[];
+    remaining_disagreements?: string[];
+    extension_attempt?: number;
+
     // Legacy / generic
     agent?: string;
-    round?: number;
     ae1_role?: string;
     ae2_role?: string;
     max_rounds?: number;
