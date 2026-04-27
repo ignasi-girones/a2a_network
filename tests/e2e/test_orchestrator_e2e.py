@@ -38,7 +38,6 @@ from agents.orchestrator import planner as planner_module
 from agents.orchestrator import planner_routes as pr_module
 from agents.orchestrator import worker_spawner as ws_module
 from agents.orchestrator.agent_registry import AgentRegistry
-from common.models import SubTask, TaskPlan
 
 
 # Responses the fake workers will return for any A2A call that hits their URL.
@@ -140,6 +139,13 @@ def mock_llm_and_a2a(monkeypatch):
 
     monkeypatch.setattr(pe_module, "create_a2a_client", fake_create_a2a)
     monkeypatch.setattr(pe_module, "send_and_get_text", fake_send)
+
+    # Stub _configure_worker so PlanExecutor doesn't make real HTTP calls
+    # to worker's /internal/configure endpoint.
+    async def fake_configure(self, worker, task, plan, *, stratagem_override=None):
+        return {"display_name": task.role_id or "worker", "role_id": task.role_id, "stratagem_id": None}
+
+    monkeypatch.setattr(pe_module.PlanExecutor, "_configure_worker", fake_configure)
 
     # Stub DeliberationLoop.run so we don't need real A2A streaming in e2e
     async def fake_loop_run(self, *, claim, goal):
