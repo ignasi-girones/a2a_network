@@ -1,14 +1,17 @@
-# docker-compose.yml — production-style deployment for the UPC FIB VM.
+# docker-compose.yml — Phase 4 deployment for the UPC FIB VM.
 #
 # External port tunnel (nattech.fib.upc.edu → 172.16.4.53):
-#   40530 → 8080  orchestrator    (public API + SSE)
-#   40531 → 8081  normalizer      (debug / agent card inspection)
-#   40532 → 8082  ae1             (debug)
-#   40533 → 8083  ae2             (debug)
-#   40534 → 8084  feedback        (debug)
-#   40535 → 8085  mcp-tools       (debug)
-#   40536 → 8086  frontend        (public demo URL)
-#   40537-40539 → 8087-8089       (spare)
+#   40530 → 8080  orchestrator      (public API + SSE)
+#   40531 → 8081  normalizer        (debug / agent card inspection)
+#   40532 → 8082  analyst           (debug)
+#   40533 → 8083  seeker            (debug)
+#   40534 → 8084  feedback          (debug)
+#   40535 → 8085  mcp-tools         (debug)
+#   40536 → 8086  frontend          (public demo URL)
+#   40537 → 8087  devils-advocate   (debug)
+#   40538 → 8088  synthesizer       (debug)
+#   40539 → 8089  empiricist        (debug)
+#   40540 → 8090  pragmatist        (debug)
 #
 # SSH to the VM:  ssh alumne@nattech.fib.upc.edu -p 22053
 # Deploy:         docker compose up -d --build
@@ -19,8 +22,9 @@
 #    Docker DNS; agents advertise themselves to the registry as
 #    http://<service-name>:<port> via SELF_HOST.
 #  * Healthchecks gate `depends_on` so the orchestrator only starts after
-#    workers are ready — this matters because workers self-register on
-#    startup, and the orchestrator then reads the registry to build plans.
+#    all 6 role workers are healthy (they self-register on startup).
+#  * MCP tools must be healthy before any specialized worker starts
+#    (workers need the MCP endpoint to call tools).
 #  * A named `a2a_net` network keeps service-name DNS stable across restarts.
 #  * `restart: unless-stopped` so agents auto-recover from crashes on the VM.
 
@@ -36,34 +40,35 @@ x-backend-base: &backend-base
   networks:
     - a2a_net
 
+# Shared healthcheck for specialized role workers (A2A agent card endpoint).
+x-role-worker-hc: &role-worker-hc
+  interval: 30s
+  timeout: 5s
+  start_period: 25s
+  retries: 3
+
+# All role workers depend on mcp-tools being healthy first.
+x-role-worker-deps: &role-worker-deps
+  depends_on:
+    mcp-tools:
+      condition: service_healthy
+
 services:
-  orchestrator:
+
+  # ── Infrastructure ───────────────────────────────────────────────────────────
+
+  mcp-tools:
     <<: *backend-base
-    command: python -m agents.orchestrator
+    command: python -m agents.mcp_tools.server
     environment:
-      ORCHESTRATOR_HOST: orchestrator
-      SELF_HOST: orchestrator
-      ORCHESTRATOR_PORT: "8080"
-      # CORS must include wherever the browser actually loads the app from.
-      # On the VM the frontend is at nattech.fib.upc.edu:40536.
-      CORS_ORIGINS: "${CORS_ORIGINS:-http://localhost:5173,http://localhost:8086,http://nattech.fib.upc.edu:40536}"
+      SELF_HOST: mcp-tools
+      MCP_PORT: "8085"
     ports:
-      - "8080:8080"
-    depends_on:
-      normalizer:
-        condition: service_healthy
-      ae1:
-        condition: service_healthy
-      ae2:
-        condition: service_healthy
-      feedback:
-        condition: service_healthy
+      - "8085:8085"
     healthcheck:
-      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8080/.well-known/agent-card.json"]
-      interval: 30s
-      timeout: 5s
-      start_period: 20s
-      retries: 3
+      # MCP server is plain HTTP streaming; no /.well-known endpoint — TCP dial.
+      test: ["CMD", "python", "-c", "import socket,sys; s=socket.socket(); s.settimeout(2); s.connect(('localhost', 8085)); sys.exit(0)"]
+      <<: *role-worker-hc
 
   normalizer:
     <<: *backend-base
@@ -76,48 +81,7 @@ services:
       - "8081:8081"
     healthcheck:
       test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8081/.well-known/agent-card.json"]
-      interval: 30s
-      timeout: 5s
-      start_period: 20s
-      retries: 3
-
-  ae1:
-    <<: *backend-base
-    command: python -m agents.specialized --port 8082 --agent-id ae1
-    environment:
-      ORCHESTRATOR_HOST: orchestrator
-      SELF_HOST: ae1
-      MCP_HOST: mcp-tools
-    ports:
-      - "8082:8082"
-    depends_on:
-      mcp-tools:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8082/.well-known/agent-card.json"]
-      interval: 30s
-      timeout: 5s
-      start_period: 20s
-      retries: 3
-
-  ae2:
-    <<: *backend-base
-    command: python -m agents.specialized --port 8083 --agent-id ae2
-    environment:
-      ORCHESTRATOR_HOST: orchestrator
-      SELF_HOST: ae2
-      MCP_HOST: mcp-tools
-    ports:
-      - "8083:8083"
-    depends_on:
-      mcp-tools:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8083/.well-known/agent-card.json"]
-      interval: 30s
-      timeout: 5s
-      start_period: 20s
-      retries: 3
+      <<: *role-worker-hc
 
   feedback:
     <<: *backend-base
@@ -130,27 +94,130 @@ services:
       - "8084:8084"
     healthcheck:
       test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8084/.well-known/agent-card.json"]
+      <<: *role-worker-hc
+
+  # ── Phase 4 Dialectic Sextet ─────────────────────────────────────────────────
+  # One container per canonical role. Each registers itself in the orchestrator's
+  # AgentRegistry on startup with skill `role_<role_id>`. The PlanExecutor then
+  # dispatches the corresponding subtask to whichever container has that skill.
+
+  analyst:
+    <<: [*backend-base, *role-worker-deps]
+    command: python -m agents.specialized --port 8082 --agent-id analyst --role analyst
+    environment:
+      ORCHESTRATOR_HOST: orchestrator
+      SELF_HOST: analyst
+      MCP_HOST: mcp-tools
+    ports:
+      - "8082:8082"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8082/.well-known/agent-card.json"]
+      <<: *role-worker-hc
+
+  seeker:
+    <<: [*backend-base, *role-worker-deps]
+    command: python -m agents.specialized --port 8083 --agent-id seeker --role seeker
+    environment:
+      ORCHESTRATOR_HOST: orchestrator
+      SELF_HOST: seeker
+      MCP_HOST: mcp-tools
+    ports:
+      - "8083:8083"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8083/.well-known/agent-card.json"]
+      <<: *role-worker-hc
+
+  devils-advocate:
+    <<: [*backend-base, *role-worker-deps]
+    command: python -m agents.specialized --port 8087 --agent-id devils_advocate --role devils_advocate
+    environment:
+      ORCHESTRATOR_HOST: orchestrator
+      SELF_HOST: devils-advocate
+      MCP_HOST: mcp-tools
+    ports:
+      - "8087:8087"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8087/.well-known/agent-card.json"]
+      <<: *role-worker-hc
+
+  synthesizer:
+    <<: [*backend-base, *role-worker-deps]
+    command: python -m agents.specialized --port 8088 --agent-id synthesizer --role synthesizer
+    environment:
+      ORCHESTRATOR_HOST: orchestrator
+      SELF_HOST: synthesizer
+      MCP_HOST: mcp-tools
+    ports:
+      - "8088:8088"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8088/.well-known/agent-card.json"]
+      <<: *role-worker-hc
+
+  empiricist:
+    <<: [*backend-base, *role-worker-deps]
+    command: python -m agents.specialized --port 8089 --agent-id empiricist --role empiricist
+    environment:
+      ORCHESTRATOR_HOST: orchestrator
+      SELF_HOST: empiricist
+      MCP_HOST: mcp-tools
+    ports:
+      - "8089:8089"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8089/.well-known/agent-card.json"]
+      <<: *role-worker-hc
+
+  pragmatist:
+    <<: [*backend-base, *role-worker-deps]
+    command: python -m agents.specialized --port 8090 --agent-id pragmatist --role pragmatist
+    environment:
+      ORCHESTRATOR_HOST: orchestrator
+      SELF_HOST: pragmatist
+      MCP_HOST: mcp-tools
+    ports:
+      - "8090:8090"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8090/.well-known/agent-card.json"]
+      <<: *role-worker-hc
+
+  # ── Orchestrator ─────────────────────────────────────────────────────────────
+
+  orchestrator:
+    <<: *backend-base
+    command: python -m agents.orchestrator
+    environment:
+      ORCHESTRATOR_HOST: orchestrator
+      SELF_HOST: orchestrator
+      ORCHESTRATOR_PORT: "8080"
+      # CORS must include wherever the browser loads the app.
+      # On the VM the frontend tunnels through nattech.fib.upc.edu:40536.
+      CORS_ORIGINS: "${CORS_ORIGINS:-http://localhost:5173,http://localhost:8086,http://nattech.fib.upc.edu:40536}"
+    ports:
+      - "8080:8080"
+    depends_on:
+      normalizer:
+        condition: service_healthy
+      analyst:
+        condition: service_healthy
+      seeker:
+        condition: service_healthy
+      devils-advocate:
+        condition: service_healthy
+      synthesizer:
+        condition: service_healthy
+      empiricist:
+        condition: service_healthy
+      pragmatist:
+        condition: service_healthy
+      feedback:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8080/.well-known/agent-card.json"]
       interval: 30s
       timeout: 5s
       start_period: 20s
       retries: 3
 
-  mcp-tools:
-    <<: *backend-base
-    command: python -m agents.mcp_tools.server
-    environment:
-      SELF_HOST: mcp-tools
-      MCP_PORT: "8085"
-    ports:
-      - "8085:8085"
-    # MCP server is pure HTTP streaming; no /.well-known endpoint. Use a
-    # plain TCP dial to confirm it's accepting connections.
-    healthcheck:
-      test: ["CMD", "python", "-c", "import socket,sys; s=socket.socket(); s.settimeout(2); s.connect(('localhost', 8085)); sys.exit(0)"]
-      interval: 30s
-      timeout: 5s
-      start_period: 20s
-      retries: 3
+  # ── Frontend ─────────────────────────────────────────────────────────────────
 
   frontend:
     build:
