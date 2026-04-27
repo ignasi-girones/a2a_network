@@ -111,6 +111,124 @@ async def web_search(query: str) -> str:
         return f"Search failed: {e}. The agents should rely on their training knowledge."
 
 
+@mcp.tool()
+async def wikipedia(title: str) -> str:
+    """Fetch the lead summary of a Wikipedia article.
+
+    Uses the public REST API (``en.wikipedia.org/api/rest_v1/page/summary``)
+    — no key required. Phase 3 routing: the Analista uses this for
+    encyclopedic baseline facts, complementing the Buscador's web_search.
+
+    Args:
+        title: Article title (e.g. "Microservices", "Bayesian inference").
+            Spaces are URL-encoded automatically.
+
+    Returns:
+        A short paragraph (the article's "extract") plus the canonical URL,
+        or an explanatory string when no article is found.
+    """
+    import httpx
+    import urllib.parse
+
+    safe_title = urllib.parse.quote(title.strip().replace(" ", "_"))
+    url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{safe_title}"
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                url,
+                headers={"Accept": "application/json"},
+                timeout=10.0,
+            )
+            if response.status_code == 404:
+                return f"Wikipedia: no article found for '{title}'."
+            response.raise_for_status()
+            data = response.json()
+            extract = (data.get("extract") or "").strip()
+            page_url = (
+                data.get("content_urls", {})
+                .get("desktop", {})
+                .get("page", "")
+            )
+            if not extract:
+                return f"Wikipedia: article for '{title}' has no extract."
+            out = f"Wikipedia · {data.get('title', title)}: {extract}"
+            if page_url:
+                out += f"\nSource: {page_url}"
+            return out
+    except Exception as e:
+        return f"Wikipedia lookup failed: {e}."
+
+
+@mcp.tool()
+async def arxiv(query: str, max_results: int = 3) -> str:
+    """Search arXiv for paper titles + abstracts matching ``query``.
+
+    Uses arXiv's public Atom-feed API (``export.arxiv.org/api/query``).
+    Phase 3 routing: the Buscador and Sintetizador use this for academic
+    grounding when the topic touches research-heavy domains.
+
+    Args:
+        query: Free-text search query (passed as ``search_query=all:<query>``).
+        max_results: Cap on returned entries; clamped to [1, 5] to keep
+            tokens bounded.
+
+    Returns:
+        A bullet list of the top results — each line ``Title (id) — first
+        sentence of the abstract`` — or a friendly message if nothing matched.
+    """
+    import re as _re
+    import urllib.parse
+
+    import httpx
+
+    n = max(1, min(5, int(max_results)))
+    params = {
+        "search_query": f"all:{query}",
+        "start": 0,
+        "max_results": n,
+    }
+    qs = urllib.parse.urlencode(params)
+    url = f"http://export.arxiv.org/api/query?{qs}"
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, timeout=15.0)
+            response.raise_for_status()
+            xml_text = response.text
+    except Exception as e:
+        return f"arXiv lookup failed: {e}."
+
+    # Quick-and-dirty Atom parsing — we don't want to add a dependency.
+    entries = _re.findall(
+        r"<entry>(.*?)</entry>", xml_text, flags=_re.DOTALL
+    )
+    if not entries:
+        return f"arXiv: no results for '{query}'."
+
+    out_lines: list[str] = []
+    for entry in entries[:n]:
+        title_m = _re.search(r"<title>(.*?)</title>", entry, flags=_re.DOTALL)
+        id_m = _re.search(r"<id>(.*?)</id>", entry)
+        summary_m = _re.search(
+            r"<summary>(.*?)</summary>", entry, flags=_re.DOTALL
+        )
+        title = (title_m.group(1).strip() if title_m else "(untitled)")
+        title = _re.sub(r"\s+", " ", title)
+        paper_id = (id_m.group(1).strip() if id_m else "")
+        summary = (summary_m.group(1).strip() if summary_m else "")
+        first_sentence = _re.split(r"(?<=[.!?])\s", summary, maxsplit=1)[0]
+        first_sentence = _re.sub(r"\s+", " ", first_sentence)[:280]
+        line = f"- {title}"
+        if paper_id:
+            line += f" ({paper_id})"
+        if first_sentence:
+            line += f" — {first_sentence}"
+        out_lines.append(line)
+
+    return "\n".join(out_lines)
+
+
 def main():
     """Run the MCP tools server."""
     print(f"MCP Tools Server starting on http://0.0.0.0:{settings.mcp_port}")

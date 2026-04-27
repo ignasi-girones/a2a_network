@@ -1,12 +1,14 @@
-"""Unit tests for PlanExecutor.
+"""Unit tests for PlanExecutor (Phase 3).
 
-The A2A client layer is mocked at the `create_a2a_client` / `send_and_get_text`
-boundary so no real HTTP traffic is generated. The focus here is the DAG
-walking logic, round-robin assignment, and error propagation.
+The A2A client layer is mocked at the `create_a2a_client` /
+`send_and_get_text` boundary so no real HTTP traffic is generated. The
+``/internal/configure`` POST is mocked at the `httpx.AsyncClient`
+boundary so persona configuration succeeds without a live worker.
 """
 
 from __future__ import annotations
 
+import httpx
 import pytest
 
 from agents.orchestrator import plan_executor as pe_module
@@ -16,10 +18,40 @@ from agents.orchestrator.plan_executor import (
     ProgressCallback,
     _build_subtask_prompt,
 )
-from common.models import SubTask, TaskPlan
+from common.models import SubTask, TaskPlan, WorkerEntry
 
 
 pytestmark = pytest.mark.asyncio
+
+
+# ── Helpers ─────────────────────────────────────────────────────────────────
+
+
+def _patch_httpx_configure_ok(monkeypatch):
+    """Stub /internal/configure POSTs so persona configuration succeeds."""
+
+    captured = {"calls": []}
+
+    class _DummyResponse:
+        def raise_for_status(self):
+            pass
+
+    class _DummyClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return False
+
+        async def post(self, url, json=None):
+            captured["calls"].append({"url": url, "payload": json})
+            return _DummyResponse()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _DummyClient)
+    return captured
 
 
 # ── _build_subtask_prompt ────────────────────────────────────────────────────
@@ -27,7 +59,12 @@ pytestmark = pytest.mark.asyncio
 
 class TestBuildSubtaskPrompt:
     def test_no_dependencies(self):
-        t = SubTask(id="t1", description="Do X", required_skill="debate")
+        t = SubTask(
+            id="t1",
+            description="Do X",
+            role_id="analyst",
+            required_skill="role_analyst",
+        )
         prompt = _build_subtask_prompt(t, {}, "Goal G")
         assert "Goal: Goal G" in prompt
         assert "Task: Do X" in prompt
@@ -35,7 +72,11 @@ class TestBuildSubtaskPrompt:
 
     def test_with_perspective(self):
         t = SubTask(
-            id="t1", description="Do X", required_skill="debate", perspective="pro"
+            id="t1",
+            description="Do X",
+            role_id="analyst",
+            required_skill="role_analyst",
+            perspective="pro",
         )
         prompt = _build_subtask_prompt(t, {}, "G")
         assert "Perspective: pro" in prompt
@@ -44,7 +85,8 @@ class TestBuildSubtaskPrompt:
         t = SubTask(
             id="t2",
             description="Respond",
-            required_skill="debate",
+            role_id="seeker",
+            required_skill="role_seeker",
             depends_on=["t1"],
         )
         prompt = _build_subtask_prompt(t, {"t1": "prior output"}, "G")
@@ -52,7 +94,7 @@ class TestBuildSubtaskPrompt:
         assert "prior output" in prompt
 
 
-# ── _assign_workers (round-robin) ────────────────────────────────────────────
+# ── _assign_workers (round-robin per skill) ─────────────────────────────────
 
 
 class CollectingProgress(ProgressCallback):
@@ -65,39 +107,79 @@ class CollectingProgress(ProgressCallback):
         self.events.append((stage, message, data))
 
 
+@pytest.fixture
+async def registry_with_two_devils_advocates(fresh_registry):
+    """Two devils_advocate workers — exercises round-robin per skill."""
+    await fresh_registry.register(
+        WorkerEntry(
+            agent_id="da1",
+            url="http://localhost:9087",
+            card={"skills": [{"id": "role_devils_advocate"}]},
+        )
+    )
+    await fresh_registry.register(
+        WorkerEntry(
+            agent_id="da2",
+            url="http://localhost:9088",
+            card={"skills": [{"id": "role_devils_advocate"}]},
+        )
+    )
+    return fresh_registry
+
+
 class TestAssignWorkers:
-    async def test_round_robin_debate(self, registry_with_workers):
-        """Two parallel 'debate' tasks land on ae1 and ae2 (not both on ae1)."""
-        executor = PlanExecutor(registry=registry_with_workers)
+    async def test_round_robin_same_role(self, registry_with_two_devils_advocates):
+        """Two parallel devils_advocate tasks land on da1 and da2."""
+        executor = PlanExecutor(registry=registry_with_two_devils_advocates)
         tasks = [
-            SubTask(id="t2", description="pro", required_skill="debate"),
-            SubTask(id="t3", description="con", required_skill="debate"),
+            SubTask(
+                id="t2",
+                description="att1",
+                role_id="devils_advocate",
+                required_skill="role_devils_advocate",
+            ),
+            SubTask(
+                id="t3",
+                description="att2",
+                role_id="devils_advocate",
+                required_skill="role_devils_advocate",
+            ),
         ]
         assigned = await executor._assign_workers(tasks)
-        assert {assigned["t2"].agent_id, assigned["t3"].agent_id} == {"ae1", "ae2"}
+        assert {assigned["t2"].agent_id, assigned["t3"].agent_id} == {"da1", "da2"}
 
-    async def test_round_robin_wraps(self, registry_with_workers):
-        """Three parallel debate tasks with 2 workers → wrap-around to first."""
-        executor = PlanExecutor(registry=registry_with_workers)
+    async def test_round_robin_wraps(self, registry_with_two_devils_advocates):
+        """Three parallel devils_advocate tasks with 2 workers → wrap-around."""
+        executor = PlanExecutor(registry=registry_with_two_devils_advocates)
         tasks = [
-            SubTask(id=f"t{i}", description="x", required_skill="debate")
+            SubTask(
+                id=f"t{i}",
+                description="x",
+                role_id="devils_advocate",
+                required_skill="role_devils_advocate",
+            )
             for i in range(3)
         ]
         assigned = await executor._assign_workers(tasks)
         ids = [assigned[t.id].agent_id for t in tasks]
-        # First two map 1:1 to ae1/ae2; third wraps back to whichever workers[0] is
         assert len({ids[0], ids[1]}) == 2
-        assert ids[2] in {"ae1", "ae2"}
+        assert ids[2] in {"da1", "da2"}
 
     async def test_missing_skill_raises(self, registry_with_workers):
         executor = PlanExecutor(registry=registry_with_workers)
         with pytest.raises(PlanExecutionError, match="no_such_skill"):
             await executor._assign_workers(
-                [SubTask(id="t1", description="x", required_skill="no_such_skill")]
+                [
+                    SubTask(
+                        id="t1",
+                        description="x",
+                        required_skill="no_such_skill",
+                    )
+                ]
             )
 
 
-# ── End-to-end DAG execution (mocked A2A layer) ──────────────────────────────
+# ── End-to-end DAG execution (mocked A2A layer + httpx configure) ──────────
 
 
 class FakeClient:
@@ -106,11 +188,8 @@ class FakeClient:
 
 
 def make_mock_a2a(responses: dict[str, str], monkeypatch):
-    """Patch create_a2a_client + send_and_get_text to serve canned responses.
-
-    `responses` maps worker URL → response text.
-    """
-    received_prompts: list[tuple[str, str]] = []  # (url, prompt)
+    """Patch create_a2a_client + send_and_get_text to serve canned responses."""
+    received_prompts: list[tuple[str, str]] = []
 
     async def fake_create(url):
         client = FakeClient()
@@ -128,43 +207,65 @@ def make_mock_a2a(responses: dict[str, str], monkeypatch):
 
 
 class TestExecute:
-    async def test_happy_dag(
+    async def test_happy_quartet(
         self, registry_with_workers, sample_debate_plan, monkeypatch
     ):
-        """Full 4-subtask DAG executes with canned responses, respecting deps."""
+        """Full 6-subtask sextet executes, respecting deps + persona configure."""
         responses = {
-            "http://localhost:9001": "NORMALIZED",
-            "http://localhost:9002": "PRO_ARG",
-            "http://localhost:9003": "CON_ARG",
-            "http://localhost:9004": "VERDICT",
+            "http://localhost:9002": "ANALYST_OUT",       # analyst
+            "http://localhost:9003": "SEEKER_OUT",        # seeker
+            "http://localhost:9087": "DEVILS_OUT",        # devils_advocate
+            "http://localhost:9089": "EMPIRICIST_OUT",    # empiricist
+            "http://localhost:9090": "PRAGMATIST_OUT",    # pragmatist
+            "http://localhost:9088": "VERDICT",           # synthesizer
         }
         prompts = make_mock_a2a(responses, monkeypatch)
+        configure_calls = _patch_httpx_configure_ok(monkeypatch)
 
         progress = CollectingProgress()
         executor = PlanExecutor(registry=registry_with_workers, progress=progress)
         results = await executor.execute(sample_debate_plan)
 
         assert results == {
-            "t1": "NORMALIZED",
-            "t2": "PRO_ARG",
-            "t3": "CON_ARG",
-            "t4": "VERDICT",
+            "t1": "ANALYST_OUT",
+            "t2": "SEEKER_OUT",
+            "t3": "DEVILS_OUT",
+            "t4": "EMPIRICIST_OUT",
+            "t5": "PRAGMATIST_OUT",
+            "t6": "VERDICT",
         }
 
-        # t4's prompt must carry both t2 and t3 outputs (dep propagation)
-        feedback_prompt = next(p for url, p in prompts if url == "http://localhost:9004")
-        assert "PRO_ARG" in feedback_prompt
-        assert "CON_ARG" in feedback_prompt
+        # The synthesizer (t6) prompt should carry all upstream outputs.
+        synth_prompt = next(
+            p for url, p in prompts if url == "http://localhost:9088"
+        )
+        assert "ANALYST_OUT" in synth_prompt
+        assert "SEEKER_OUT" in synth_prompt
+        assert "DEVILS_OUT" in synth_prompt
 
-        # Expected progress stages fired
+        # Each subtask triggered one /internal/configure POST with its persona.
+        assert len(configure_calls["calls"]) == 6
+        roles_configured = {
+            c["payload"]["persona"]["role_id"] for c in configure_calls["calls"]
+        }
+        assert roles_configured == {
+            "analyst", "seeker", "devils_advocate", "empiricist", "pragmatist", "synthesizer"
+        }
+        # The claim from the plan flows into every config payload.
+        for call in configure_calls["calls"]:
+            assert call["payload"]["claim"] == sample_debate_plan.claim
+
+        # Expected progress stages
         stages = [e[0] for e in progress.events]
         assert "plan_start" in stages
         assert "plan_complete" in stages
-        assert stages.count("subtask_done") == 4
+        assert stages.count("subtask_done") == 6
 
     async def test_subtask_error_propagates(
         self, registry_with_workers, sample_debate_plan, monkeypatch
     ):
+        _patch_httpx_configure_ok(monkeypatch)
+
         async def fake_create(url):
             return FakeClient(), object()
 
@@ -178,21 +279,58 @@ class TestExecute:
         with pytest.raises(PlanExecutionError, match="boom"):
             await executor.execute(sample_debate_plan)
 
+    async def test_configure_failure_aborts_run(
+        self, registry_with_workers, sample_debate_plan, monkeypatch
+    ):
+        """If /internal/configure raises, the plan fails fast (no stale persona)."""
+
+        class _DummyClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_):
+                return False
+
+            async def post(self, _url, json=None):
+                raise RuntimeError("configure exploded")
+
+        monkeypatch.setattr(httpx, "AsyncClient", _DummyClient)
+
+        async def fake_create(url):
+            return FakeClient(), object()
+
+        async def fake_send(client, prompt, **kwargs):
+            return "should not reach"
+
+        monkeypatch.setattr(pe_module, "create_a2a_client", fake_create)
+        monkeypatch.setattr(pe_module, "send_and_get_text", fake_send)
+
+        executor = PlanExecutor(registry=registry_with_workers)
+        with pytest.raises(PlanExecutionError, match="configure"):
+            await executor.execute(sample_debate_plan)
+
     async def test_cycle_detected(self, registry_with_workers, monkeypatch):
         """A DAG with a cycle raises PlanExecutionError ('deadlock')."""
+        _patch_httpx_configure_ok(monkeypatch)
         plan = TaskPlan(
             goal="x",
+            claim="c",
             subtasks=[
                 SubTask(
                     id="t1",
                     description="a",
-                    required_skill="debate",
+                    role_id="analyst",
+                    required_skill="role_analyst",
                     depends_on=["t2"],
                 ),
                 SubTask(
                     id="t2",
                     description="b",
-                    required_skill="debate",
+                    role_id="seeker",
+                    required_skill="role_seeker",
                     depends_on=["t1"],
                 ),
             ],

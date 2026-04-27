@@ -1,21 +1,27 @@
-"""Planner — LLM-driven decomposition of a user request into a TaskPlan.
+"""Planner — Phase 3 deliberative-quartet plan emitter.
 
-Given (a) the user's free-text input and (b) the skills currently advertised
-by workers in the AgentRegistry, the Planner emits a DAG of SubTasks.
+The Phase 2 planner asked the LLM to generate the entire DAG (nodes,
+dependencies, skills) from scratch. That gave hallucinated skills and
+inconsistent debate structures. Phase 3 inverts the contract:
 
-The plan is consumed by PlanExecutor, which runs ready subtasks in parallel,
-dispatching each one to a worker via A2A based on `required_skill`.
+  - The DAG topology is **fixed**: the canonical RAPID-D quartet
+    (Analista → {Buscador, Abogado del Diablo} → Sintetizador). The Planner
+    no longer chooses the structure.
+  - The LLM is restricted to extracting two pieces of context from the
+    user prompt: (a) a one-sentence ``goal`` restatement and (b) a
+    testable ``claim`` that anchors the panel's debate (and, in Phase B,
+    every agent's BeliefState log_odds).
+  - Per-role subtask descriptions are deterministic templates filled with
+    ``goal`` + ``claim``. The role-specific prompt detail lives in
+    ``persona_catalog`` (system prompts) — the SubTask description here
+    is a thin instruction for the executor's prompt builder.
 
-Design notes:
-- The prompt bakes in the "Plan-and-Execute" pattern: one LLM pass generates
-  the full DAG up front; we don't re-plan between steps (that's what `replan`
-  is for, invoked only on failure).
-- We pass the live skill catalog into the prompt so the planner can only
-  request skills it knows exist. Any mismatch is caught post-parse and,
-  in sub-phase 2c, will trigger `WorkerSpawner`.
-- JSON-mode is requested via `response_format={"type": "json_object"}` for
-  providers that support it (Groq does). Even so, we validate and do one
-  retry with a corrective message if parsing fails.
+This guarantees:
+  - Every prompt produces the same quartet, so the frontend graph and the
+    TFG memoria can cite a stable architecture.
+  - The Planner cannot invent skills outside ``role_<role_id>``.
+  - LLM failure degrades gracefully to a hard-coded quartet using
+    ``user_input`` as both goal and claim.
 """
 
 from __future__ import annotations
@@ -25,141 +31,203 @@ import logging
 from typing import Any
 
 from common.llm_provider import llm_complete
-from common.models import SubTask, TaskPlan
+from common.models import CANONICAL_ROLES, SubTask, TaskPlan
 
 logger = logging.getLogger(__name__)
 
 
-PLANNER_SYSTEM_PROMPT = """\
-You are the Planner of an agentic orchestrator. Your job is to decompose a
-user request into a small DAG (2-6 nodes) of sub-tasks that can be delegated
-to specialized worker agents.
+# ── Canonical sextet topology ───────────────────────────────────────────────
+#
+# Phase 1 (parallel):
+#   t1 (analyst, no deps)
+#
+# Phase 2 (parallel after t1):
+#   t2 (seeker,          depends_on=[t1])
+#   t3 (devils_advocate, depends_on=[t1])
+#
+# Phase 3 (parallel after t2):
+#   t4 (empiricist,  depends_on=[t1, t2])  ← challenges evidence quality
+#   t5 (pragmatist,  depends_on=[t1, t2])  ← real-world cases
+#
+# Phase 4 (after all):
+#   t6 (synthesizer, depends_on=[t1, t2, t3, t4, t5])
+#
+# t3 (DA) can run in parallel with t2 since it only needs t1;
+# the PlanExecutor's readiness check handles this automatically.
+_SEXTET_DAG: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    ("t1", "analyst",         ()),
+    ("t2", "seeker",          ("t1",)),
+    ("t3", "devils_advocate", ("t1",)),
+    ("t4", "empiricist",      ("t1", "t2")),
+    ("t5", "pragmatist",      ("t1", "t2")),
+    ("t6", "synthesizer",     ("t1", "t2", "t3", "t4", "t5")),
+)
 
-You will receive a catalog of available workers with their skills. Every
-`required_skill` in your plan MUST match an `id` from that catalog.
 
-Return ONLY valid JSON with this exact shape:
-{
-  "goal": "one-sentence restatement of the user's intent",
-  "subtasks": [
-    {
-      "id": "t1",
-      "description": "concrete instruction for the worker",
-      "required_skill": "<skill id from catalog>",
-      "depends_on": [],
-      "perspective": null
-    },
-    {
-      "id": "t2",
-      "description": "...",
-      "required_skill": "<skill id from catalog>",
-      "depends_on": ["t1"],
-      "perspective": "pro"
-    }
-  ],
-  "max_workers": 3
+# Per-role description templates. The {claim} placeholder receives the
+# planner-extracted central proposition; descriptions stay short because the
+# real role-specific prompt detail lives in persona_catalog system prompts.
+_ROLE_DESCRIPTIONS: dict[str, str] = {
+    "analyst": (
+        "Produce an impartial factual baseline for the central claim "
+        "({claim!r}): definitions, stakeholders, verifiable facts, and "
+        "explicit [DISPUTED] markers where the literature is contested."
+    ),
+    "seeker": (
+        "Identify 2-3 sub-questions the Analyst left unanswered about "
+        "{claim!r} and search for external evidence (web_search) to fill "
+        "them. Cite sources visibly and flag failed lookups."
+    ),
+    "devils_advocate": (
+        "Attack the easy conclusion that the Analyst's baseline implies "
+        "about {claim!r}. Apply the Schopenhauer eristic stratagem assigned "
+        "in your persona — embody it without announcing it."
+    ),
+    "empiricist": (
+        "Interrogate the Analyst and Seeker outputs about {claim!r} with "
+        "Popperian falsificationism: demand testable predictions, challenge "
+        "methodology, search arxiv for peer-reviewed falsifying evidence."
+    ),
+    "pragmatist": (
+        "Ground the panel's abstract discussion of {claim!r} in concrete "
+        "documented cases — companies, projects, or historical precedents "
+        "where the claim was tested in practice. Cite outcomes."
+    ),
+    "synthesizer": (
+        "Evaluate all five panel contributions (Analyst, Seeker, Devil's "
+        "Advocate, Empiricist, Pragmatist) under Habermasian validity claims "
+        "(truth, rightness, sincerity, comprehensibility) and produce a final "
+        "verdict on {claim!r}."
+    ),
 }
 
-Rules:
-- IDs are short strings ("t1", "t2", ...), unique within the plan.
-- `depends_on` lists earlier IDs whose output this subtask needs as context.
-- `perspective` is only meaningful for debate-style workers; use null otherwise.
-- Prefer a pipeline where a normalization/structuring step runs first, then
-  analytical workers run in parallel on its output, then a synthesis step.
-- CRITICAL: `required_skill` MUST be copied VERBATIM from the catalog's skill
-  `id` field. Never invent, translate, or generalize a skill name. If the
-  catalog offers `normalize_input`, `debate`, `format_verdict` then those are
-  the ONLY valid values. Skills like `research`, `analysis`, `summarize`,
-  `search`, etc. DO NOT EXIST unless they appear in the catalog — using them
-  will cause the plan to fail immediately.
-- Keep descriptions concrete and actionable — a worker should be able to act
-  on the `description` alone (plus the outputs of its `depends_on`).
-"""
 
+_PLANNER_SYSTEM_PROMPT = """\
+You are the Planner of a deliberative agentic orchestrator.
 
-REPLAN_SYSTEM_PROMPT = """\
-A previous plan failed on a specific subtask. Produce a revised plan that
-avoids the failure while still achieving the original goal. Same JSON shape
-as before. You may drop or rewrite the failed subtask, or route around it.
+The DAG of subtasks is FIXED — you do not choose nodes or dependencies.
+A Spanish-language deliberative panel of six roles (Analista, Buscador,
+Abogado del Diablo, Empírico, Pragmático, Sintetizador) will run on every
+user prompt.
+
+Your single responsibility is to extract two strings from the user's
+free-text request:
+
+  1. `goal`  — a one-sentence restatement of what the user wants the panel
+               to deliberate about.
+  2. `claim` — a single TESTABLE proposition (the form "X is Y because Z"
+               or "we should/should not do W"). The dialectic panel will
+               argue for and against this claim, so it must be specific
+               enough to be supported or refuted with evidence. If the user
+               input is open-ended, choose the strongest defensible claim
+               implied by it.
+
+Return ONLY valid JSON of the shape:
+{
+  "goal": "...",
+  "claim": "..."
+}
+
+Both strings should be in Spanish, between 5 and 30 words. No commentary,
+no markdown, no extra fields.
 """
 
 
 def _format_worker_catalog(workers: list[dict[str, Any]]) -> str:
-    """Render the available-workers catalog for the planner prompt.
+    """Render the worker catalog purely for diagnostic logging.
 
-    `workers` is a list of dicts with keys {agent_id, url, skills} where each
-    skill is {id, name, description, tags}. We keep this compact because it
-    goes into every planning call.
+    Phase 3 doesn't pass the catalog to the LLM (the DAG is fixed), but we
+    still log it so a missing role-worker is visible at plan time.
     """
     if not workers:
         return "(no workers currently registered)"
-
     lines = []
     for w in workers:
         skills = w.get("skills") or []
-        if not skills:
-            lines.append(f"- agent_id={w.get('agent_id')}: (no skills advertised)")
-            continue
-        skill_lines = [
-            f"    • id={s.get('id')!r} name={s.get('name')!r} "
-            f"tags={s.get('tags') or []}"
-            for s in skills
-        ]
-        lines.append(
-            f"- agent_id={w.get('agent_id')}:\n" + "\n".join(skill_lines)
-        )
+        skill_ids = [s.get("id") for s in skills]
+        lines.append(f"- {w.get('agent_id')}: {skill_ids}")
     return "\n".join(lines)
 
 
-def _parse_plan(raw: str, known_skills: set[str] | None = None) -> TaskPlan:
-    """Parse and validate a planner LLM response into a TaskPlan.
+def _validate_role_coverage(
+    workers: list[dict[str, Any]],
+) -> tuple[set[str], set[str]]:
+    """Return (covered_roles, missing_roles) according to the registry.
 
-    Raises ValueError on malformed JSON or invalid plan structure: unknown
-    dependencies, duplicate IDs, empty subtasks list, or — when
-    `known_skills` is provided — `required_skill` values that aren't in
-    the catalog.
+    A role is "covered" if at least one worker advertises ``role_<role_id>``
+    as a skill id. Missing roles will need to be spawned by the orchestrator
+    (sub-phase A.6) before the plan executes.
+    """
+    advertised: set[str] = set()
+    for w in workers:
+        for s in w.get("skills") or []:
+            sid = s.get("id")
+            if isinstance(sid, str):
+                advertised.add(sid)
+    covered = {r for r in CANONICAL_ROLES if f"role_{r}" in advertised}
+    missing = set(CANONICAL_ROLES) - covered
+    return covered, missing
 
-    The skill check lives here (not in the executor) so the Planner can
-    detect hallucinated skills and re-prompt the LLM with a corrective
-    message before burning a full execution attempt.
+
+def _build_sextet_plan(goal: str, claim: str) -> TaskPlan:
+    """Assemble the canonical 6-node TaskPlan deterministically."""
+    subtasks: list[SubTask] = []
+    for tid, role, deps in _SEXTET_DAG:
+        description = _ROLE_DESCRIPTIONS[role].format(claim=claim or goal)
+        subtasks.append(
+            SubTask(
+                id=tid,
+                description=description,
+                role_id=role,  # type: ignore[arg-type]
+                required_skill=f"role_{role}",
+                depends_on=list(deps),
+                perspective=None,
+            )
+        )
+    return TaskPlan(
+        goal=goal,
+        claim=claim,
+        subtasks=subtasks,
+        max_workers=len(_SEXTET_DAG),
+    )
+
+
+# Keep backward-compat alias so any external callers still compile.
+_build_quartet_plan = _build_sextet_plan
+
+
+def _parse_extraction(raw: str) -> tuple[str, str]:
+    """Pull (goal, claim) out of the LLM's JSON response.
+
+    Raises ValueError on malformed JSON or missing fields. We don't accept
+    partial responses — both fields must be present and non-empty for the
+    extraction to count as successful.
     """
     data = json.loads(raw)
-    plan = TaskPlan(**data)
-
-    ids = [t.id for t in plan.subtasks]
-    if not ids:
-        raise ValueError("Plan contains no subtasks")
-    if len(set(ids)) != len(ids):
-        raise ValueError(f"Duplicate subtask IDs: {ids}")
-    known = set(ids)
-    for t in plan.subtasks:
-        for dep in t.depends_on:
-            if dep not in known:
-                raise ValueError(
-                    f"Subtask {t.id!r} depends on unknown id {dep!r}"
-                )
-
-    if known_skills is not None:
-        invented = {
-            t.required_skill for t in plan.subtasks
-            if t.required_skill not in known_skills
-        }
-        if invented:
-            raise ValueError(
-                f"Plan references unknown skills {sorted(invented)}. "
-                f"Available skills: {sorted(known_skills)}"
-            )
-    return plan
+    goal = (data.get("goal") or "").strip()
+    claim = (data.get("claim") or "").strip()
+    if not goal or not claim:
+        raise ValueError(
+            f"Planner response missing required fields "
+            f"(goal={goal!r}, claim={claim!r})"
+        )
+    return goal, claim
 
 
 class Planner:
-    """Wraps the LLM call that turns user input + worker catalog → TaskPlan."""
+    """Phase 3 Planner — extracts goal+claim, emits the canonical quartet.
+
+    The LLM is consulted only for natural-language extraction. The DAG
+    structure is hard-coded and never depends on the user input or the
+    worker catalog — that's the deterministic backbone the TFG memoria
+    can cite as the dialectic architecture.
+    """
 
     def __init__(
         self,
         model: str,
-        temperature: float = 0.4,
-        max_tokens: int = 900,
+        temperature: float = 0.2,
+        max_tokens: int = 300,
     ) -> None:
         self.model = model
         self.temperature = temperature
@@ -170,113 +238,70 @@ class Planner:
         user_input: str,
         workers: list[dict[str, Any]],
     ) -> TaskPlan:
-        """Generate a TaskPlan for `user_input` using `workers` as the catalog.
+        """Extract goal+claim from `user_input`, return canonical quartet.
 
-        `workers` is the serialized output of the AgentRegistry — each element
-        is expected to carry at least {agent_id, url, skills}.
+        ``workers`` is logged but not passed to the LLM. Coverage gaps
+        (missing roles) are surfaced via warnings; the orchestrator is
+        responsible for spawning missing workers via WorkerSpawner before
+        executing.
         """
         catalog = _format_worker_catalog(workers)
-        known_skills = {
-            s.get("id")
-            for w in workers
-            for s in (w.get("skills") or [])
-            if s.get("id")
-        }
-        user_prompt = (
-            f"Available workers:\n{catalog}\n\n"
-            f"Valid `required_skill` values (choose ONLY from this set): "
-            f"{sorted(known_skills)}\n\n"
-            f"User request:\n{user_input}\n\n"
-            "Emit the JSON plan now."
-        )
+        covered, missing = _validate_role_coverage(workers)
+        logger.info("Planner sees registry:\n%s", catalog)
+        if missing:
+            logger.warning(
+                "Planner: roles missing from registry, orchestrator must "
+                "spawn them: %s (covered: %s)",
+                sorted(missing), sorted(covered),
+            )
+
         messages = [
-            {"role": "system", "content": PLANNER_SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt},
+            {"role": "system", "content": _PLANNER_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": (
+                    f"User request:\n{user_input}\n\n"
+                    "Emit the JSON {goal, claim} now."
+                ),
+            },
         ]
 
         for attempt in range(3):
-            raw = await llm_complete(
-                model=self.model,
-                messages=messages,
-                temperature=self.temperature,
-                max_tokens=self.max_tokens,
-                response_format={"type": "json_object"},
-            )
             try:
-                plan = _parse_plan(raw, known_skills=known_skills)
-                logger.info(
-                    "Planner produced %d subtasks for goal=%r",
-                    len(plan.subtasks),
-                    plan.goal,
+                raw = await llm_complete(
+                    model=self.model,
+                    messages=messages,
+                    temperature=self.temperature,
+                    max_tokens=self.max_tokens,
+                    response_format={"type": "json_object"},
                 )
-                return plan
+                goal, claim = _parse_extraction(raw)
+                logger.info(
+                    "Planner extracted goal=%r claim=%r", goal, claim
+                )
+                return _build_sextet_plan(goal, claim)
             except (json.JSONDecodeError, ValueError) as e:
                 logger.warning(
-                    "Plan parse failed (attempt %d): %s", attempt + 1, e
+                    "Plan extraction failed (attempt %d): %s",
+                    attempt + 1, e,
                 )
-                messages.append({"role": "assistant", "content": raw})
                 messages.append({
                     "role": "user",
                     "content": (
-                        f"That response was invalid: {e}. "
-                        f"Remember: `required_skill` MUST be one of "
-                        f"{sorted(known_skills)}. Return ONLY valid JSON."
+                        f"That response was invalid: {e}. Return ONLY a "
+                        'JSON object with non-empty "goal" and "claim" '
+                        "fields, both Spanish strings."
                     ),
                 })
 
-        # Last-resort fallback: linear normalize → debate(pro) || debate(con) →
-        # format_verdict, IF those skills exist in the catalog. Otherwise raise.
-        skill_ids = {
-            s.get("id")
-            for w in workers
-            for s in (w.get("skills") or [])
-        }
-        if {"normalize_input", "debate", "format_verdict"} <= skill_ids:
-            logger.warning("Falling back to default debate plan")
-            return TaskPlan(
-                goal=user_input[:120],
-                subtasks=[
-                    SubTask(
-                        id="t1",
-                        description=(
-                            "Normalize the user request into structured JSON "
-                            "with topic, domain, and perspectives."
-                        ),
-                        required_skill="normalize_input",
-                    ),
-                    SubTask(
-                        id="t2",
-                        description=(
-                            "Argue in favor of the proposal using the "
-                            "normalized topic as context."
-                        ),
-                        required_skill="debate",
-                        depends_on=["t1"],
-                        perspective="pro",
-                    ),
-                    SubTask(
-                        id="t3",
-                        description=(
-                            "Argue against the proposal using the "
-                            "normalized topic as context."
-                        ),
-                        required_skill="debate",
-                        depends_on=["t1"],
-                        perspective="con",
-                    ),
-                    SubTask(
-                        id="t4",
-                        description=(
-                            "Produce a human-readable verdict synthesizing "
-                            "both sides of the debate."
-                        ),
-                        required_skill="format_verdict",
-                        depends_on=["t2", "t3"],
-                    ),
-                ],
-                max_workers=3,
-            )
-        raise RuntimeError("Planner failed to produce a valid plan")
+        # Hard fallback: the dialectic backbone is too important to skip
+        # because of LLM JSON errors. Use the raw user input as both goal
+        # and claim — the Analyst's baseline will absorb the ambiguity.
+        logger.warning(
+            "Planner falling back to user_input as goal+claim after retries"
+        )
+        fallback_text = user_input.strip()[:200] or "Tema sin especificar"
+        return _build_sextet_plan(fallback_text, fallback_text)
 
     async def replan(
         self,
@@ -285,33 +310,17 @@ class Planner:
         error: str,
         workers: list[dict[str, Any]],
     ) -> TaskPlan:
-        """Produce a revised plan after a subtask failed."""
-        catalog = _format_worker_catalog(workers)
-        known_skills = {
-            s.get("id")
-            for w in workers
-            for s in (w.get("skills") or [])
-            if s.get("id")
-        }
-        user_prompt = (
-            f"Original goal: {original.goal}\n\n"
-            f"Original plan JSON:\n{original.model_dump_json(indent=2)}\n\n"
-            f"Failed subtask id: {failed_task.id}\n"
-            f"Failure reason: {error}\n\n"
-            f"Current worker catalog:\n{catalog}\n\n"
-            f"Valid `required_skill` values: {sorted(known_skills)}\n\n"
-            "Emit the revised JSON plan now."
-        )
-        messages = [
-            {"role": "system", "content": REPLAN_SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt},
-        ]
+        """Rebuild the canonical quartet (preserving goal+claim).
 
-        raw = await llm_complete(
-            model=self.model,
-            messages=messages,
-            temperature=self.temperature,
-            max_tokens=self.max_tokens,
-            response_format={"type": "json_object"},
+        Phase 3 doesn't reshape the DAG on failure — the four roles are
+        non-negotiable. Replanning instead means re-emitting the same
+        plan; the orchestrator (caller) is expected to retry the failed
+        subtask, possibly after spawning a fresh worker. We accept the
+        failed-task and error arguments to preserve the API surface for
+        DRTAG (Phase C), which will use them to choose a new stratagem.
+        """
+        logger.info(
+            "Planner.replan: keeping canonical quartet (failed=%s, error=%s)",
+            failed_task.id, error,
         )
-        return _parse_plan(raw, known_skills=known_skills)
+        return _build_sextet_plan(original.goal, original.claim)

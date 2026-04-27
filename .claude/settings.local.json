@@ -10,7 +10,8 @@
       "Bash(npm create:*)",
       "Bash(npm install:*)",
       "Bash(PYTHONPATH=. python -c \":*)",
-      "Bash(npx tsc:*)"
+      "Bash(npx tsc:*)",
+      "Bash(python -c \"import ast; [ast.parse\\(open\\(f\\).read\\(\\)\\) for f in ['agents/specialized/__main__.py','agents/specialized/agent_state.py','agents/specialized/config_api.py','agents/specialized/executor.py','agents/specialized/eristic.py','agents/orchestrator/persona_catalog.py','agents/orchestrator/planner.py','agents/orchestrator/plan_executor.py','agents/orchestrator/agentic_orchestrator.py','agents/orchestrator/worker_spawner.py','common/models.py']]; print\\('all modules parse OK'\\)\")"
     ]
   }
 }

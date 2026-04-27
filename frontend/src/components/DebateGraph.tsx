@@ -1,5 +1,13 @@
 import { useMemo, useState } from 'react';
-import type { PlanSubtask, SubtaskRuntime, SubtaskStatus, TaskPlan } from '../types';
+import type {
+  PersonaMeta,
+  PlanSubtask,
+  RoleId,
+  SubtaskRuntime,
+  SubtaskStatus,
+  TaskPlan,
+} from '../types';
+import { ROLE_PALETTE } from '../types';
 import { Markdown } from './Markdown';
 
 interface Props {
@@ -14,40 +22,33 @@ const NODE_W = 200;
 const NODE_H = 86;
 const PADDING = 24;
 
-// ── Visual style per status ──────────────────────────────────────────────────
-const STATUS_STYLE: Record<
+// ── Status badge styles (orthogonal to role color) ──────────────────────────
+const STATUS_BADGE: Record<
   SubtaskStatus,
-  { fill: string; stroke: string; label: string; labelBg: string }
+  { label: string; bg: string; ring: string }
 > = {
-  pending: {
-    fill: '#f9fafb',
-    stroke: '#d1d5db',
-    label: 'pendiente',
-    labelBg: '#e5e7eb',
-  },
-  running: {
-    fill: '#eff6ff',
-    stroke: '#3b82f6',
-    label: 'ejecutando',
-    labelBg: '#3b82f6',
-  },
-  done: {
-    fill: '#ecfdf5',
-    stroke: '#10b981',
-    label: 'completado',
-    labelBg: '#10b981',
-  },
-  failed: {
-    fill: '#fef2f2',
-    stroke: '#ef4444',
-    label: 'error',
-    labelBg: '#ef4444',
-  },
+  pending: { label: 'pendiente', bg: '#9ca3af', ring: '#d1d5db' },
+  running: { label: 'ejecutando', bg: '#3b82f6', ring: '#3b82f6' },
+  done:    { label: 'completado', bg: '#10b981', ring: '#10b981' },
+  failed:  { label: 'error',      bg: '#ef4444', ring: '#ef4444' },
 };
 
+// Phase 3: every node has a role; if missing (legacy or pre-dispatch state)
+// fall back to a neutral grey so the graph still renders.
+const NEUTRAL_PALETTE = {
+  label: 'Worker',
+  fill: '#f9fafb',
+  stroke: '#9ca3af',
+  badge: 'bg-gray-100 text-gray-700',
+  accent: '#9ca3af',
+};
+
+function paletteFor(role: RoleId | null | undefined) {
+  if (role && role in ROLE_PALETTE) return ROLE_PALETTE[role];
+  return NEUTRAL_PALETTE;
+}
+
 // ── Topological layout: assign each node to a "level" (column) ──────────────
-// level(n) = 0 if n has no deps; otherwise max(level(d)) + 1 over deps d.
-// Within a level, order nodes by id for deterministic vertical placement.
 function computeLayout(subtasks: PlanSubtask[]) {
   const byId = new Map(subtasks.map((t) => [t.id, t]));
   const levelCache = new Map<string, number>();
@@ -71,19 +72,16 @@ function computeLayout(subtasks: PlanSubtask[]) {
     const lvl = levelOf(t.id, new Set());
     (levels[lvl] ||= []).push(t);
   }
-  // Sort each level by id for stability
   for (const lvl of Object.keys(levels)) {
     levels[Number(lvl)].sort((a, b) => a.id.localeCompare(b.id));
   }
 
-  // Positions
   const positions = new Map<string, { x: number; y: number }>();
   const maxLevel = Math.max(...Object.keys(levels).map(Number));
   const maxRows = Math.max(...Object.values(levels).map((l) => l.length));
 
   for (let l = 0; l <= maxLevel; l++) {
     const nodes = levels[l] || [];
-    // Center nodes within the column vertically so short levels don't hug the top
     const offset = ((maxRows - nodes.length) * ROW_HEIGHT) / 2;
     for (let i = 0; i < nodes.length; i++) {
       positions.set(nodes[i].id, {
@@ -99,7 +97,6 @@ function computeLayout(subtasks: PlanSubtask[]) {
   return { positions, width, height };
 }
 
-// ── Cubic Bezier path between two node centers-right → center-left ──────────
 function edgePath(
   from: { x: number; y: number },
   to: { x: number; y: number },
@@ -131,13 +128,40 @@ export function DebateGraph({ plan, runtime }: Props) {
   const { positions, width, height } = layout;
   const selectedTask = selected ? plan.subtasks.find((t) => t.id === selected) : null;
   const selectedRuntime = selected ? runtime[selected] : undefined;
+  const selectedRole =
+    selectedRuntime?.role_id ?? selectedTask?.role_id ?? null;
+  const selectedPalette = paletteFor(selectedRole);
+  const selectedPersona: PersonaMeta | undefined = selectedRuntime?.persona;
 
   return (
     <div className="flex flex-col gap-2">
-      {/* Goal header */}
-      <div className="text-xs text-gray-600">
-        <span className="font-semibold">Objetivo:</span>{' '}
-        <span className="italic">{plan.goal}</span>
+      {/* Goal + claim header */}
+      <div className="text-xs text-gray-600 space-y-1">
+        <div>
+          <span className="font-semibold">Objetivo:</span>{' '}
+          <span className="italic">{plan.goal}</span>
+        </div>
+        {plan.claim && plan.claim !== plan.goal && (
+          <div>
+            <span className="font-semibold">Tesis:</span>{' '}
+            <span className="italic text-gray-500">{plan.claim}</span>
+          </div>
+        )}
+      </div>
+
+      {/* Role legend */}
+      <div className="flex flex-wrap gap-1.5 text-[10px]">
+        {(Object.keys(ROLE_PALETTE) as RoleId[]).map((r) => {
+          const p = ROLE_PALETTE[r];
+          return (
+            <span
+              key={r}
+              className={`px-1.5 py-0.5 rounded font-medium ${p.badge}`}
+            >
+              {p.label}
+            </span>
+          );
+        })}
       </div>
 
       {/* SVG graph */}
@@ -149,7 +173,6 @@ export function DebateGraph({ plan, runtime }: Props) {
           xmlns="http://www.w3.org/2000/svg"
           style={{ display: 'block' }}
         >
-          {/* Arrow marker */}
           <defs>
             <marker
               id="arrow"
@@ -164,16 +187,20 @@ export function DebateGraph({ plan, runtime }: Props) {
             </marker>
           </defs>
 
-          {/* Edges (directed) */}
+          {/* Edges: stroke uses the *destination* role accent so the visual
+              flow points toward its consumer. */}
           {plan.subtasks.flatMap((t) =>
             t.depends_on.map((dep) => {
               const from = positions.get(dep);
               const to = positions.get(t.id);
               if (!from || !to) return null;
               const toStatus = runtime[t.id]?.status ?? 'pending';
+              const toRole =
+                runtime[t.id]?.role_id ?? t.role_id ?? null;
+              const toPalette = paletteFor(toRole);
               const stroke =
                 toStatus === 'running'
-                  ? '#3b82f6'
+                  ? toPalette.accent
                   : toStatus === 'done'
                   ? '#10b981'
                   : toStatus === 'failed'
@@ -197,12 +224,21 @@ export function DebateGraph({ plan, runtime }: Props) {
           {plan.subtasks.map((t) => {
             const pos = positions.get(t.id)!;
             const status = runtime[t.id]?.status ?? 'pending';
-            const style = STATUS_STYLE[status];
+            const role = runtime[t.id]?.role_id ?? t.role_id ?? null;
+            const palette = paletteFor(role);
+            const statusBadge = STATUS_BADGE[status];
             const isSelected = selected === t.id;
-            const workerId = runtime[t.id]?.worker_id;
-            const label =
-              workerId ||
-              (t.required_skill ? t.required_skill : t.id);
+            const persona = runtime[t.id]?.persona;
+            const stratagemId = persona?.stratagem_id ?? null;
+
+            // Top label: persona display name if configured, else role label,
+            // else worker_id, else subtask id. Falls back gracefully through
+            // the configure → dispatch → done lifecycle.
+            const topLabel =
+              persona?.display_name ||
+              palette.label ||
+              runtime[t.id]?.worker_id ||
+              t.id;
 
             return (
               <g
@@ -211,7 +247,7 @@ export function DebateGraph({ plan, runtime }: Props) {
                 style={{ cursor: 'pointer' }}
                 onClick={() => setSelected(isSelected ? null : t.id)}
               >
-                {/* Pulsing aura while running */}
+                {/* Pulsing aura while running, tinted with the role accent */}
                 {status === 'running' && (
                   <rect
                     x={-4}
@@ -219,8 +255,8 @@ export function DebateGraph({ plan, runtime }: Props) {
                     width={NODE_W + 8}
                     height={NODE_H + 8}
                     rx={10}
-                    fill="#3b82f6"
-                    opacity={0.15}
+                    fill={palette.accent}
+                    opacity={0.18}
                   >
                     <animate
                       attributeName="opacity"
@@ -237,52 +273,47 @@ export function DebateGraph({ plan, runtime }: Props) {
                   width={NODE_W}
                   height={NODE_H}
                   rx={8}
-                  fill={style.fill}
-                  stroke={isSelected ? '#1f2937' : style.stroke}
+                  fill={palette.fill}
+                  stroke={isSelected ? '#1f2937' : palette.stroke}
                   strokeWidth={isSelected ? 2.5 : 1.5}
                 />
 
-                {/* Worker label (top) */}
+                {/* Persona / role label (top) */}
                 <text
                   x={12}
                   y={20}
                   fontSize={12}
                   fontWeight={600}
-                  fill="#111827"
+                  fill={palette.accent}
                 >
-                  {label}
+                  {truncate(topLabel, 28)}
                 </text>
 
                 {/* Description (middle, truncated) */}
-                <text
-                  x={12}
-                  y={40}
-                  fontSize={10}
-                  fill="#4b5563"
-                >
-                  {truncate(t.description, 30)}
+                <text x={12} y={40} fontSize={10} fill="#4b5563">
+                  {truncate(t.description, 32)}
                 </text>
 
-                {/* Perspective tag (if present) */}
-                {t.perspective && (
-                  <g transform={`translate(12, 52)`}>
+                {/* Stratagem badge (bottom-left, only for devil's advocate) */}
+                {stratagemId !== null && stratagemId !== undefined && (
+                  <g transform={`translate(12, 50)`}>
                     <rect
                       x={0}
                       y={0}
-                      width={44}
+                      width={56}
                       height={14}
                       rx={3}
-                      fill={t.perspective === 'pro' ? '#dbeafe' : '#fee2e2'}
+                      fill="#fee2e2"
                     />
                     <text
-                      x={22}
+                      x={28}
                       y={10}
                       fontSize={9}
                       fontWeight={600}
                       textAnchor="middle"
-                      fill={t.perspective === 'pro' ? '#1e40af' : '#991b1b'}
+                      fill="#991b1b"
                     >
-                      {t.perspective}
+                      eristic #{stratagemId}
                     </text>
                   </g>
                 )}
@@ -295,7 +326,7 @@ export function DebateGraph({ plan, runtime }: Props) {
                     width={70}
                     height={16}
                     rx={3}
-                    fill={style.labelBg}
+                    fill={statusBadge.bg}
                   />
                   <text
                     x={35}
@@ -305,7 +336,7 @@ export function DebateGraph({ plan, runtime }: Props) {
                     textAnchor="middle"
                     fill="#ffffff"
                   >
-                    {style.label}
+                    {statusBadge.label}
                   </text>
                 </g>
 
@@ -327,24 +358,28 @@ export function DebateGraph({ plan, runtime }: Props) {
 
       {/* Detail panel for selected node */}
       {selectedTask && (
-        <div className="border border-gray-200 rounded-lg p-3 bg-white text-xs space-y-2">
+        <div
+          className="border rounded-lg p-3 bg-white text-xs space-y-2"
+          style={{ borderColor: selectedPalette.stroke + '55' }}
+        >
           <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span
+                className={`text-[10px] px-1.5 py-0.5 rounded font-semibold ${selectedPalette.badge}`}
+              >
+                {selectedPalette.label}
+              </span>
               <span className="font-semibold text-gray-800">
-                {selectedRuntime?.worker_id || selectedTask.required_skill}
+                {selectedPersona?.display_name ||
+                  selectedRuntime?.worker_id ||
+                  selectedTask.required_skill}
               </span>
               <span className="font-mono text-[10px] text-gray-400">
                 ({selectedTask.id})
               </span>
-              {selectedTask.perspective && (
-                <span
-                  className={`text-[10px] px-1.5 py-0.5 rounded font-semibold ${
-                    selectedTask.perspective === 'pro'
-                      ? 'bg-blue-100 text-blue-700'
-                      : 'bg-red-100 text-red-700'
-                  }`}
-                >
-                  {selectedTask.perspective}
+              {selectedPersona?.stratagem_id != null && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded font-semibold bg-red-100 text-red-700 border border-red-200">
+                  Stratagem #{selectedPersona.stratagem_id}
                 </span>
               )}
             </div>
@@ -356,6 +391,28 @@ export function DebateGraph({ plan, runtime }: Props) {
               ×
             </button>
           </div>
+
+          {selectedPersona && (
+            <div className="text-[10px] text-gray-500 flex flex-wrap gap-x-3 gap-y-1">
+              <span>
+                <span className="font-medium">temp:</span>{' '}
+                {selectedPersona.temperature.toFixed(2)}
+              </span>
+              <span>
+                <span className="font-medium">tools:</span>{' '}
+                {selectedPersona.tool_whitelist.length > 0
+                  ? selectedPersona.tool_whitelist.join(', ')
+                  : '(ninguna)'}
+              </span>
+              {selectedRuntime?.worker_id && (
+                <span>
+                  <span className="font-medium">worker:</span>{' '}
+                  <span className="font-mono">{selectedRuntime.worker_id}</span>
+                </span>
+              )}
+            </div>
+          )}
+
           <p className="text-gray-600">{selectedTask.description}</p>
           {selectedTask.depends_on.length > 0 && (
             <p className="text-[10px] text-gray-500">

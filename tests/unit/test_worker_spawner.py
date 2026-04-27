@@ -92,7 +92,7 @@ class TestSpawn:
     async def test_spawn_registers_and_returns(self, fresh_registry, monkeypatch):
         """Worker appears in registry → spawn() returns the _SpawnedWorker."""
         proc = FakeProcess()
-        patch_subprocess(monkeypatch, proc)
+        captured = patch_subprocess(monkeypatch, proc)
 
         async def register_after_delay():
             # Simulate the subprocess eventually self-registering.
@@ -101,7 +101,7 @@ class TestSpawn:
                 WorkerEntry(
                     agent_id="dyn_1",
                     url="http://localhost:9010",
-                    card={"skills": [{"id": "debate"}]},
+                    card={"skills": [{"id": "role_analyst"}]},
                 )
             )
 
@@ -109,13 +109,26 @@ class TestSpawn:
         registration_task = asyncio.create_task(register_after_delay())
 
         worker = await spawner.spawn(
-            "dyn_1", wait_timeout_s=2.0, poll_interval_s=0.02
+            "dyn_1",
+            role="analyst",
+            wait_timeout_s=2.0,
+            poll_interval_s=0.02,
         )
         await registration_task
 
         assert worker.agent_id == "dyn_1"
+        assert worker.role == "analyst"
         assert worker.port == settings.worker_port_pool_start
         assert "dyn_1" in spawner._spawned
+        # The --role flag must reach the subprocess invocation.
+        argv = captured["args"]
+        assert "--role" in argv
+        assert argv[argv.index("--role") + 1] == "analyst"
+
+    async def test_spawn_rejects_unknown_role(self, fresh_registry):
+        spawner = WorkerSpawner(fresh_registry)
+        with pytest.raises(ValueError, match="Unknown role"):
+            await spawner.spawn("dyn_1", role="hallucinated_role")  # type: ignore[arg-type]
 
     async def test_spawn_idempotent(self, fresh_registry, monkeypatch):
         """Spawning the same agent_id twice returns the same record."""
@@ -128,10 +141,10 @@ class TestSpawn:
 
         spawner = WorkerSpawner(fresh_registry)
         w1 = await spawner.spawn(
-            "dyn_1", wait_timeout_s=1.0, poll_interval_s=0.01
+            "dyn_1", role="analyst", wait_timeout_s=1.0, poll_interval_s=0.01
         )
         w2 = await spawner.spawn(
-            "dyn_1", wait_timeout_s=1.0, poll_interval_s=0.01
+            "dyn_1", role="analyst", wait_timeout_s=1.0, poll_interval_s=0.01
         )
         assert w1 is w2
 
@@ -144,7 +157,10 @@ class TestSpawn:
         spawner = WorkerSpawner(fresh_registry)
         with pytest.raises(TimeoutError):
             await spawner.spawn(
-                "dyn_1", wait_timeout_s=0.1, poll_interval_s=0.02
+                "dyn_1",
+                role="seeker",
+                wait_timeout_s=0.1,
+                poll_interval_s=0.02,
             )
         # Port was released so the next allocation re-uses the pool start.
         assert spawner._allocate_port() == settings.worker_port_pool_start
@@ -159,7 +175,10 @@ class TestSpawn:
         spawner = WorkerSpawner(fresh_registry)
         with pytest.raises(RuntimeError, match="died"):
             await spawner.spawn(
-                "dyn_1", wait_timeout_s=1.0, poll_interval_s=0.01
+                "dyn_1",
+                role="devils_advocate",
+                wait_timeout_s=1.0,
+                poll_interval_s=0.01,
             )
 
 
@@ -175,7 +194,9 @@ class TestTeardown:
             WorkerEntry(agent_id="dyn_1", url="http://x", card={})
         )
         spawner = WorkerSpawner(fresh_registry)
-        await spawner.spawn("dyn_1", wait_timeout_s=1.0, poll_interval_s=0.01)
+        await spawner.spawn(
+            "dyn_1", role="analyst", wait_timeout_s=1.0, poll_interval_s=0.01
+        )
 
         port = list(spawner._in_use)[0]
         assert await spawner.teardown("dyn_1") is True
@@ -196,9 +217,13 @@ class TestTeardown:
         patch_subprocess(monkeypatch, FakeProcess())
 
         spawner = WorkerSpawner(fresh_registry)
-        await spawner.spawn("a", wait_timeout_s=1.0, poll_interval_s=0.01)
+        await spawner.spawn(
+            "a", role="analyst", wait_timeout_s=1.0, poll_interval_s=0.01
+        )
         patch_subprocess(monkeypatch, FakeProcess())
-        await spawner.spawn("b", wait_timeout_s=1.0, poll_interval_s=0.01)
+        await spawner.spawn(
+            "b", role="seeker", wait_timeout_s=1.0, poll_interval_s=0.01
+        )
 
         await spawner.teardown_all()
         assert spawner._spawned == {}

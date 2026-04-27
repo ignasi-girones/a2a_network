@@ -52,6 +52,13 @@ class Settings(BaseSettings):
     # Debate
     max_debate_rounds: int = 5
 
+    # Phase 4: maximum number of deliberation rounds in the multi-round
+    # blackboard loop (DeliberationLoop). Round 1 is opening statements
+    # (everyone speaks), rounds 2..N are speaker-selected follow-ups, plus
+    # one extra final round for the Synthesizer. With 3 rounds the typical
+    # debate produces ≈10-14 LLM calls — well under Groq's 30 RPM cap.
+    deliberation_max_rounds: int = 3
+
     # Dynamic worker pool (sub-phase 2c). When the Planner produces a task that
     # requires more concurrent workers of a given skill than are currently
     # registered, the WorkerSpawner allocates a port from this pool and

@@ -9,10 +9,11 @@ same `register_self_with_orchestrator` lifespan hook as the static workers,
 so we only need to wait for its agent_id to appear in the registry.
 
 Lifecycle:
-    spawn(agent_id)  → allocates port, launches subprocess, waits for
-                       registry appearance (with timeout), returns port
-    teardown(agent_id) → terminates subprocess, best-effort registry cleanup
-    teardown_all()     → shutdown all spawned workers (called on exit)
+    spawn(agent_id, role) → allocates port, launches subprocess bound to a
+                            dialectic role, waits for registry appearance
+                            (with timeout), returns the worker handle
+    teardown(agent_id)    → terminates subprocess, best-effort registry cleanup
+    teardown_all()        → shutdown all spawned workers (called on exit)
 
 Notes:
 - Uses `sys.executable` so we stay inside the current venv on Windows.
@@ -30,6 +31,7 @@ from dataclasses import dataclass, field
 
 from agents.orchestrator.agent_registry import AgentRegistry
 from common.config import settings
+from common.models import CANONICAL_ROLES, RoleId
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +40,7 @@ logger = logging.getLogger(__name__)
 class _SpawnedWorker:
     agent_id: str
     port: int
+    role: RoleId
     process: asyncio.subprocess.Process
     url: str = field(init=False)
 
@@ -69,22 +72,37 @@ class WorkerSpawner:
     async def spawn(
         self,
         agent_id: str,
+        role: RoleId,
         wait_timeout_s: float = 30.0,
         poll_interval_s: float = 0.5,
     ) -> _SpawnedWorker:
-        """Launch a new specialized worker and wait for it to self-register.
+        """Launch a new specialized worker bound to ``role`` and wait for
+        it to self-register.
+
+        Phase 3: ``role`` is mandatory. It is passed through to the worker
+        as ``--role`` so the subprocess advertises the right
+        ``role_<role>`` skill on registration. The worker's persona
+        contract (system prompt, stratagem) is set later via
+        ``/internal/configure``.
 
         The subprocess inherits stdout/stderr so its logs appear alongside
         the orchestrator's — simpler for the demo than piping. If the
         subprocess dies before registering, the port is freed and we raise.
         """
+        if role not in CANONICAL_ROLES:
+            raise ValueError(
+                f"Unknown role {role!r}; expected one of {CANONICAL_ROLES}"
+            )
+
         async with self._lock:
             if agent_id in self._spawned:
                 return self._spawned[agent_id]
 
             port = self._allocate_port()
 
-        logger.info("Spawning worker %s on port %d", agent_id, port)
+        logger.info(
+            "Spawning worker %s (role=%s) on port %d", agent_id, role, port
+        )
         process = await asyncio.create_subprocess_exec(
             sys.executable,
             "-m",
@@ -93,6 +111,8 @@ class WorkerSpawner:
             str(port),
             "--agent-id",
             agent_id,
+            "--role",
+            role,
         )
 
         # Poll the registry until the new worker appears, or the process exits,
@@ -102,14 +122,14 @@ class WorkerSpawner:
             if process.returncode is not None:
                 self._in_use.discard(port)
                 raise RuntimeError(
-                    f"Spawned worker {agent_id} died with "
+                    f"Spawned worker {agent_id} (role={role}) died with "
                     f"exit code {process.returncode}"
                 )
 
             entry = await self.registry.find_by_agent_id(agent_id)
             if entry is not None:
                 worker = _SpawnedWorker(
-                    agent_id=agent_id, port=port, process=process
+                    agent_id=agent_id, port=port, role=role, process=process
                 )
                 self._spawned[agent_id] = worker
                 logger.info(

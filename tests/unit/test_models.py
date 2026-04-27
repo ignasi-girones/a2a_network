@@ -83,9 +83,17 @@ class TestTaskPlan:
 
 class TestRoleDecision:
     def test_max_rounds_bounded(self):
-        """RoleDecision.max_rounds must be between 2 and 5 inclusive."""
-        ae1 = AgentRoleConfig(role="A", perspective="pro")
-        ae2 = AgentRoleConfig(role="B", perspective="con")
+        """RoleDecision.max_rounds must be between 2 and 5 inclusive.
+
+        RoleDecision is a Phase 2 legacy model retained for reading historical
+        runs. Its embedded AgentRoleConfig now uses the Phase 3 PersonaContract
+        shape; we instantiate two configs (analyst + seeker) just to populate
+        the wrapper.
+        """
+        from agents.orchestrator.persona_catalog import build_persona
+
+        ae1 = AgentRoleConfig(persona=build_persona("analyst"))
+        ae2 = AgentRoleConfig(persona=build_persona("seeker"))
 
         with pytest.raises(ValidationError):
             RoleDecision(ae1_config=ae1, ae2_config=ae2, max_rounds=1)

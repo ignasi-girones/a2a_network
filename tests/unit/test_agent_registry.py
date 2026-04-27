@@ -59,11 +59,13 @@ class TestAgentRegistry:
         assert await fresh_registry.all_workers() == []
         assert await fresh_registry.deregister("ae1") is False
 
-    async def test_find_by_skill_multiple_matches(
+    async def test_find_by_skill_role_match(
         self, registry_with_workers: AgentRegistry
     ):
-        matches = await registry_with_workers.find_by_skill("debate")
-        assert {m.agent_id for m in matches} == {"ae1", "ae2"}
+        """Phase 3: each canonical role advertises its own role_<id> skill."""
+        for role in ("analyst", "seeker", "devils_advocate", "synthesizer"):
+            matches = await registry_with_workers.find_by_skill(f"role_{role}")
+            assert {m.agent_id for m in matches} == {role}
 
     async def test_find_by_skill_no_match(self, registry_with_workers: AgentRegistry):
         assert await registry_with_workers.find_by_skill("no_such_skill") == []
@@ -75,7 +77,7 @@ class TestAgentRegistry:
         await fresh_registry.register(
             WorkerEntry(agent_id="bare", url="http://x", card={"name": "Bare"})
         )
-        assert await fresh_registry.find_by_skill("debate") == []
+        assert await fresh_registry.find_by_skill("role_analyst") == []
 
     async def test_concurrent_register(self, fresh_registry: AgentRegistry):
         """The asyncio.Lock serializes concurrent register calls cleanly."""

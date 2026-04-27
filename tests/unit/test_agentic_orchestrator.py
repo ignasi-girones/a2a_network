@@ -1,12 +1,15 @@
-"""Unit tests for AgenticOrchestrator.
+"""Unit tests for AgenticOrchestrator (Phase 3).
 
-Focus: the pieces that don't require real workers — peak-demand calculation,
-capacity gap detection, sink-based synthesis, and the end-to-end orchestration
-logic with everything mocked.
+Focus: peak-demand calculation under the canonical quartet, role-aware
+capacity gap detection, sink-based synthesis (the synthesizer is always
+the sink), and the end-to-end orchestration logic with everything mocked.
 """
 
 from __future__ import annotations
 
+import json
+
+import httpx
 import pytest
 
 from agents.orchestrator import agentic_orchestrator as ao_module
@@ -15,9 +18,11 @@ from agents.orchestrator.agent_registry import AgentRegistry
 from agents.orchestrator.agentic_orchestrator import (
     AgenticOrchestrator,
     _peak_concurrent_demand,
+    _role_from_skill,
 )
 from agents.orchestrator.plan_executor import ProgressCallback
-from common.models import SubTask, TaskPlan, WorkerEntry
+from agents.orchestrator.planner import _build_quartet_plan
+from common.models import CANONICAL_ROLES, SubTask, TaskPlan, WorkerEntry
 
 
 pytestmark = pytest.mark.asyncio
@@ -31,57 +36,83 @@ class CollectingProgress(ProgressCallback):
         self.events.append((stage, message, data))
 
 
+def _patch_httpx_configure_ok(monkeypatch):
+    """Stub out the /internal/configure POST so it always succeeds."""
+
+    class _DummyResponse:
+        def raise_for_status(self):
+            pass
+
+    class _DummyClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return False
+
+        async def post(self, _url, json=None):
+            return _DummyResponse()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _DummyClient)
+
+
+# ── _role_from_skill ─────────────────────────────────────────────────────────
+
+
+class TestRoleFromSkill:
+    def test_recognises_canonical_roles(self):
+        for r in CANONICAL_ROLES:
+            assert _role_from_skill(f"role_{r}") == r
+
+    def test_unknown_role_prefix_returns_none(self):
+        assert _role_from_skill("role_hallucinated") is None
+
+    def test_non_role_skill_returns_none(self):
+        assert _role_from_skill("debate") is None
+        assert _role_from_skill("") is None
+
+
 # ── _peak_concurrent_demand ──────────────────────────────────────────────────
 
 
 class TestPeakConcurrentDemand:
-    def test_debate_dag(self, sample_debate_plan):
+    def test_canonical_quartet(self, sample_debate_plan):
+        """Each role is dispatched once → peak is 1 per role-skill."""
         peak = _peak_concurrent_demand(sample_debate_plan)
-        assert peak == {
-            "normalize_input": 1,
-            "debate": 2,
-            "format_verdict": 1,
-        }
+        assert peak == {f"role_{r}": 1 for r in CANONICAL_ROLES}
 
     def test_single_task(self):
         plan = TaskPlan(
             goal="x",
-            subtasks=[SubTask(id="t1", description="a", required_skill="s")],
+            subtasks=[
+                SubTask(
+                    id="t1",
+                    description="a",
+                    role_id="analyst",
+                    required_skill="role_analyst",
+                )
+            ],
         )
-        assert _peak_concurrent_demand(plan) == {"s": 1}
+        assert _peak_concurrent_demand(plan) == {"role_analyst": 1}
 
-    def test_fully_parallel(self):
-        """3 independent debate tasks → peak=3."""
+    def test_fully_parallel_same_role(self):
+        """3 independent devils_advocate tasks (DRTAG-style) → peak=3."""
         plan = TaskPlan(
             goal="x",
             subtasks=[
-                SubTask(id=f"t{i}", description="a", required_skill="debate")
+                SubTask(
+                    id=f"t{i}",
+                    description="a",
+                    role_id="devils_advocate",
+                    required_skill="role_devils_advocate",
+                )
                 for i in range(3)
             ],
         )
-        assert _peak_concurrent_demand(plan) == {"debate": 3}
-
-    def test_sequential_same_skill(self):
-        """3 sequential debate tasks → peak=1 (no concurrency)."""
-        plan = TaskPlan(
-            goal="x",
-            subtasks=[
-                SubTask(id="t1", description="a", required_skill="debate"),
-                SubTask(
-                    id="t2",
-                    description="a",
-                    required_skill="debate",
-                    depends_on=["t1"],
-                ),
-                SubTask(
-                    id="t3",
-                    description="a",
-                    required_skill="debate",
-                    depends_on=["t2"],
-                ),
-            ],
-        )
-        assert _peak_concurrent_demand(plan) == {"debate": 1}
+        assert _peak_concurrent_demand(plan) == {"role_devils_advocate": 3}
 
     def test_deadlock_returns_partial(self):
         """A cyclic DAG causes the loop to bail early; we get the partial peak."""
@@ -91,18 +122,19 @@ class TestPeakConcurrentDemand:
                 SubTask(
                     id="t1",
                     description="a",
-                    required_skill="debate",
+                    role_id="analyst",
+                    required_skill="role_analyst",
                     depends_on=["t2"],
                 ),
                 SubTask(
                     id="t2",
                     description="b",
-                    required_skill="debate",
+                    role_id="seeker",
+                    required_skill="role_seeker",
                     depends_on=["t1"],
                 ),
             ],
         )
-        # Returns empty since no task is ever ready
         assert _peak_concurrent_demand(plan) == {}
 
 
@@ -112,28 +144,29 @@ class TestPeakConcurrentDemand:
 class FakeSpawner:
     """A WorkerSpawner stub that records spawn calls and registers fake workers."""
 
-    def __init__(self, registry: AgentRegistry, auto_register_skill: str = "debate"):
+    def __init__(self, registry: AgentRegistry):
         self.registry = registry
-        self.auto_register_skill = auto_register_skill
-        self.spawned: list[str] = []
+        self.spawned: list[tuple[str, str]] = []  # (agent_id, role)
         self.torn_down: list[str] = []
 
-    async def spawn(self, agent_id: str, **_kwargs):
-        self.spawned.append(agent_id)
+    async def spawn(self, agent_id: str, role: str | None = None, **_kwargs):
+        # In real usage the WorkerSpawner expects a role; the FakeSpawner
+        # mirrors that contract.
+        assert role is not None, "Phase 3 spawn must include a role"
+        self.spawned.append((agent_id, role))
         await self.registry.register(
             WorkerEntry(
                 agent_id=agent_id,
                 url=f"http://localhost/{agent_id}",
                 card={
                     "skills": [
-                        {"id": self.auto_register_skill, "name": "x", "tags": []}
+                        {"id": f"role_{role}", "name": role.title(), "tags": []}
                     ]
                 },
             )
         )
-        # The orchestrator ignores the return value; a SimpleNamespace is fine.
         from types import SimpleNamespace
-        return SimpleNamespace(agent_id=agent_id)
+        return SimpleNamespace(agent_id=agent_id, role=role)
 
     async def teardown(self, agent_id: str):
         self.torn_down.append(agent_id)
@@ -151,48 +184,61 @@ class TestEnsureCapacity:
         await ao._ensure_capacity(sample_debate_plan)
         assert spawner.spawned == []
 
-    async def test_spawns_difference(self, fresh_registry):
-        """Plan needs 3 debate workers, registry has 1 → spawn 2."""
-        await fresh_registry.register(
-            WorkerEntry(
-                agent_id="ae1",
-                url="http://ae1",
-                card={"skills": [{"id": "debate"}]},
-            )
-        )
-
-        plan = TaskPlan(
-            goal="x",
-            subtasks=[
-                SubTask(id=f"t{i}", description="a", required_skill="debate")
-                for i in range(3)
-            ],
-        )
+    async def test_spawns_missing_roles_with_correct_role(
+        self, fresh_registry, sample_debate_plan
+    ):
+        """No workers registered → spawn 4, one per canonical role."""
         spawner = FakeSpawner(fresh_registry)
         ao = AgenticOrchestrator(registry=fresh_registry, spawner=spawner)
-        await ao._ensure_capacity(plan)
+        await ao._ensure_capacity(sample_debate_plan)
 
-        assert len(spawner.spawned) == 2
-        # Post-spawn, registry should have 3 debate workers
-        debate_workers = await fresh_registry.find_by_skill("debate")
-        assert len(debate_workers) == 3
+        assert len(spawner.spawned) == len(CANONICAL_ROLES)
+        spawned_roles = {role for _aid, role in spawner.spawned}
+        assert spawned_roles == set(CANONICAL_ROLES)
+
+        # Post-spawn, the registry advertises one worker per role.
+        for role in CANONICAL_ROLES:
+            workers = await fresh_registry.find_by_skill(f"role_{role}")
+            assert len(workers) == 1
+
+    async def test_partial_coverage_only_spawns_missing(
+        self, fresh_registry, sample_debate_plan
+    ):
+        """Half the workers exist → only the missing roles get spawned."""
+        for role in ["analyst", "seeker"]:
+            await fresh_registry.register(
+                WorkerEntry(
+                    agent_id=role,
+                    url=f"http://localhost/{role}",
+                    card={"skills": [{"id": f"role_{role}"}]},
+                )
+            )
+
+        spawner = FakeSpawner(fresh_registry)
+        ao = AgenticOrchestrator(registry=fresh_registry, spawner=spawner)
+        await ao._ensure_capacity(sample_debate_plan)
+
+        spawned_roles = {role for _aid, role in spawner.spawned}
+        assert spawned_roles == {"devils_advocate", "empiricist", "pragmatist", "synthesizer"}
 
 
 # ── synthesize + sink detection ──────────────────────────────────────────────
 
 
 class TestSynthesize:
-    async def test_single_sink_returns_output_directly(
+    async def test_synthesizer_is_the_sink(
         self, fresh_registry, sample_debate_plan
     ):
-        """sample_debate_plan has t4 as single sink → its output becomes verdict."""
+        """The canonical sextet has t6 (synthesizer) as the unique sink."""
         spawner = FakeSpawner(fresh_registry)
         ao = AgenticOrchestrator(registry=fresh_registry, spawner=spawner)
         results = {
-            "t1": "norm",
-            "t2": "pro",
-            "t3": "con",
-            "t4": "FINAL VERDICT",
+            "t1": "factual baseline",
+            "t2": "external evidence",
+            "t3": "adversarial critique",
+            "t4": "empirical challenge",
+            "t5": "practical cases",
+            "t6": "FINAL VERDICT",
         }
         verdict = await ao._synthesize("user", sample_debate_plan, results)
         assert verdict == "FINAL VERDICT"
@@ -200,12 +246,22 @@ class TestSynthesize:
     async def test_multiple_sinks_invokes_llm(
         self, fresh_registry, monkeypatch
     ):
-        """Plan with 2 sinks → must call llm_complete to combine them."""
+        """An ad-hoc plan with 2 sinks → calls llm_complete to combine them."""
         plan = TaskPlan(
             goal="x",
             subtasks=[
-                SubTask(id="t1", description="a", required_skill="debate"),
-                SubTask(id="t2", description="b", required_skill="debate"),
+                SubTask(
+                    id="t1",
+                    description="a",
+                    role_id="analyst",
+                    required_skill="role_analyst",
+                ),
+                SubTask(
+                    id="t2",
+                    description="b",
+                    role_id="seeker",
+                    required_skill="role_seeker",
+                ),
             ],
         )
 
@@ -225,19 +281,22 @@ class TestSynthesize:
 
 class TestRun:
     async def test_end_to_end_no_spawn(
-        self, registry_with_workers, sample_debate_plan, monkeypatch
+        self, registry_with_workers, monkeypatch
     ):
-        """run() goes: plan (mocked) → execute (mocked A2A) → synthesize (sink)."""
-        # 1. Stub the Planner LLM call
+        """run() goes: plan (mocked LLM) → execute (mocked A2A) → synthesize."""
+        # 1. Stub the Planner LLM call — returns goal+claim JSON
         async def fake_llm_complete(**kwargs):
-            # The planner asks for JSON; return our sample plan as JSON.
-            return sample_debate_plan.model_dump_json()
+            return json.dumps(
+                {"goal": "Microservicios o monolito", "claim": "Microservicios > monolito"}
+            )
 
-        # The Planner LLM is imported into planner_module; patch THAT binding.
         from agents.orchestrator import planner as planner_module
         monkeypatch.setattr(planner_module, "llm_complete", fake_llm_complete)
 
-        # 2. Stub the A2A dispatch layer used by PlanExecutor.
+        # 2. Stub the worker /internal/configure POST.
+        _patch_httpx_configure_ok(monkeypatch)
+
+        # 3. Stub the A2A dispatch layer used by PlanExecutor.
         class FakeClient:
             def __init__(self, url):
                 self.url = url
@@ -248,20 +307,22 @@ class TestRun:
         async def fake_create(url):
             return FakeClient(url), object()
 
-        response_by_url = {
-            "http://localhost:9001": "NORM",
-            "http://localhost:9002": "PRO",
-            "http://localhost:9003": "CON",
-            "http://localhost:9004": "FINAL",
+        # registry_with_workers maps roles to specific URLs (see conftest).
+        url_to_output = {
+            "http://localhost:9002": "ANALYST",       # analyst
+            "http://localhost:9003": "SEEKER",        # seeker
+            "http://localhost:9087": "DEVILS",        # devils_advocate
+            "http://localhost:9089": "EMPIRICIST",    # empiricist
+            "http://localhost:9090": "PRAGMATIST",    # pragmatist
+            "http://localhost:9088": "SYNTHESIS",     # synthesizer (sink)
         }
 
         async def fake_send(client, prompt, **kwargs):
-            return response_by_url[client.url]
+            return url_to_output[client.url]
 
         monkeypatch.setattr(pe_module, "create_a2a_client", fake_create)
         monkeypatch.setattr(pe_module, "send_and_get_text", fake_send)
 
-        # 3. No spawn should happen (peak demand 2 = available)
         spawner = FakeSpawner(registry_with_workers)
         progress = CollectingProgress()
         ao = AgenticOrchestrator(
@@ -270,70 +331,28 @@ class TestRun:
             progress=progress,
         )
 
-        verdict = await ao.run("user input")
+        verdict = await ao.run("Microservicios vs monolito")
 
-        assert verdict == "FINAL"
+        assert verdict == "SYNTHESIS"
         assert spawner.spawned == []
         stages = [e[0] for e in progress.events]
         assert "plan_ready" in stages
-        assert "plan_complete" in stages
+        # Phase 4: plan_complete is replaced by deliberation_complete
+        assert "deliberation_start" in stages
+        assert "deliberation_complete" in stages
 
-    async def test_run_triggers_spawn_and_teardown(
+    async def test_run_triggers_spawn_and_teardown_when_role_missing(
         self, fresh_registry, monkeypatch
     ):
-        """Plan demanding 3 parallel debates with only 1 debate worker → spawn 2, teardown after."""
-        # Seed one debate worker + normalizer + feedback so synthesis finds a sink
-        await fresh_registry.register(
-            WorkerEntry(
-                agent_id="ae1",
-                url="http://localhost:9002",
-                card={"skills": [{"id": "debate"}]},
-            )
-        )
-        await fresh_registry.register(
-            WorkerEntry(
-                agent_id="normalizer",
-                url="http://localhost:9001",
-                card={"skills": [{"id": "normalize_input"}]},
-            )
-        )
-        await fresh_registry.register(
-            WorkerEntry(
-                agent_id="feedback",
-                url="http://localhost:9004",
-                card={"skills": [{"id": "format_verdict"}]},
-            )
-        )
-
-        # Plan with 3 parallel debate subtasks (t2/t3/t4) after t1, then t5 feedback
-        plan_json = TaskPlan(
-            goal="g",
-            subtasks=[
-                SubTask(id="t1", description="norm", required_skill="normalize_input"),
-                SubTask(
-                    id="t2", description="a", required_skill="debate",
-                    depends_on=["t1"],
-                ),
-                SubTask(
-                    id="t3", description="b", required_skill="debate",
-                    depends_on=["t1"],
-                ),
-                SubTask(
-                    id="t4", description="c", required_skill="debate",
-                    depends_on=["t1"],
-                ),
-                SubTask(
-                    id="t5", description="v", required_skill="format_verdict",
-                    depends_on=["t2", "t3", "t4"],
-                ),
-            ],
-        ).model_dump_json()
+        """No workers registered → spawn 4 (one per role), teardown after run."""
 
         async def fake_llm_complete(**kwargs):
-            return plan_json
+            return json.dumps({"goal": "g", "claim": "c"})
 
         from agents.orchestrator import planner as planner_module
         monkeypatch.setattr(planner_module, "llm_complete", fake_llm_complete)
+
+        _patch_httpx_configure_ok(monkeypatch)
 
         class FakeClient:
             def __init__(self, url):
@@ -346,19 +365,23 @@ class TestRun:
             return FakeClient(url), object()
 
         async def fake_send(client, prompt, **kwargs):
+            # The synthesizer's output is the verdict; mark its url specially.
             return f"out-from-{client.url}"
 
         monkeypatch.setattr(pe_module, "create_a2a_client", fake_create)
         monkeypatch.setattr(pe_module, "send_and_get_text", fake_send)
 
-        spawner = FakeSpawner(fresh_registry, auto_register_skill="debate")
+        spawner = FakeSpawner(fresh_registry)
         ao = AgenticOrchestrator(registry=fresh_registry, spawner=spawner)
 
         verdict = await ao.run("user")
 
-        # Should have spawned 2 extra debate workers
-        assert len(spawner.spawned) == 2
+        # Should have spawned 6 workers (one per role)
+        assert len(spawner.spawned) == len(CANONICAL_ROLES)
+        spawned_roles = {role for _aid, role in spawner.spawned}
+        assert spawned_roles == set(CANONICAL_ROLES)
         # And torn them down at the end
-        assert set(spawner.torn_down) == set(spawner.spawned)
-        # Verdict comes from the t5 sink
+        spawned_ids = {aid for aid, _r in spawner.spawned}
+        assert set(spawner.torn_down) == spawned_ids
+        # Verdict comes from the synthesizer sink
         assert verdict.startswith("out-from-")

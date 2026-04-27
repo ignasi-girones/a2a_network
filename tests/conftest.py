@@ -37,47 +37,35 @@ def fresh_registry():
 
 @pytest_asyncio.fixture
 async def registry_with_workers(fresh_registry) -> AsyncIterator:
-    """Registry pre-populated with the 4 base workers (normalizer, feedback, ae1, ae2)."""
-    from common.models import WorkerEntry
+    """Registry pre-populated with the Phase 3 dialectic quartet workers."""
+    from common.models import CANONICAL_ROLES, WorkerEntry
 
-    entries = [
-        WorkerEntry(
-            agent_id="normalizer",
-            url="http://localhost:9001",
-            card={
-                "name": "Normalizer Agent",
-                "skills": [
-                    {"id": "normalize_input", "name": "Normalize Input", "tags": []}
-                ],
-            },
-        ),
-        WorkerEntry(
-            agent_id="feedback",
-            url="http://localhost:9004",
-            card={
-                "name": "Feedback Agent",
-                "skills": [
-                    {"id": "format_verdict", "name": "Format Verdict", "tags": []}
-                ],
-            },
-        ),
-        WorkerEntry(
-            agent_id="ae1",
-            url="http://localhost:9002",
-            card={
-                "name": "AE1",
-                "skills": [{"id": "debate", "name": "Debate", "tags": ["debate"]}],
-            },
-        ),
-        WorkerEntry(
-            agent_id="ae2",
-            url="http://localhost:9003",
-            card={
-                "name": "AE2",
-                "skills": [{"id": "debate", "name": "Debate", "tags": ["debate"]}],
-            },
-        ),
-    ]
+    role_ports = {
+        "analyst":         9002,
+        "seeker":          9003,
+        "devils_advocate": 9087,
+        "empiricist":      9089,
+        "pragmatist":      9090,
+        "synthesizer":     9088,
+    }
+    entries = []
+    for role in CANONICAL_ROLES:
+        entries.append(
+            WorkerEntry(
+                agent_id=role,
+                url=f"http://localhost:{role_ports[role]}",
+                card={
+                    "name": f"Worker ({role})",
+                    "skills": [
+                        {
+                            "id": f"role_{role}",
+                            "name": role.title(),
+                            "tags": ["dialectic", role],
+                        }
+                    ],
+                },
+            )
+        )
     for e in entries:
         await fresh_registry.register(e)
     yield fresh_registry
@@ -88,39 +76,16 @@ async def registry_with_workers(fresh_registry) -> AsyncIterator:
 
 @pytest.fixture
 def sample_debate_plan():
-    """The canonical 4-subtask plan produced for a yes/no debate prompt."""
-    from common.models import SubTask, TaskPlan
+    """The canonical Phase 3 sextet TaskPlan.
 
-    return TaskPlan(
+    t1 (analyst) ──► t2 (seeker, deps=t1) ──► t4 (empiricist, deps=t1,t2) ──┐
+                 └── t3 (DA, deps=t1)      └── t5 (pragmatist, deps=t1,t2) ─┴► t6 (synthesizer)
+    """
+    from agents.orchestrator.planner import _build_quartet_plan
+
+    return _build_quartet_plan(
         goal="Should a startup pick microservices or monolith?",
-        subtasks=[
-            SubTask(
-                id="t1",
-                description="Normalize input",
-                required_skill="normalize_input",
-            ),
-            SubTask(
-                id="t2",
-                description="Argue pro",
-                required_skill="debate",
-                depends_on=["t1"],
-                perspective="pro",
-            ),
-            SubTask(
-                id="t3",
-                description="Argue con",
-                required_skill="debate",
-                depends_on=["t1"],
-                perspective="con",
-            ),
-            SubTask(
-                id="t4",
-                description="Synthesize verdict",
-                required_skill="format_verdict",
-                depends_on=["t2", "t3"],
-            ),
-        ],
-        max_workers=3,
+        claim="Microservices outperform monoliths for early-stage startups",
     )
 
 
