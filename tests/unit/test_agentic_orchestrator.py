@@ -277,6 +277,11 @@ class TestRun:
         stages = [e[0] for e in progress.events]
         assert "plan_ready" in stages
         assert "plan_complete" in stages
+        plan_ready_data = next(
+            data for stage, _msg, data in progress.events if stage == "plan_ready"
+        )
+        assert plan_ready_data is not None
+        assert plan_ready_data.get("plan_source") == "llm"
 
     async def test_run_triggers_spawn_and_teardown(
         self, fresh_registry, monkeypatch

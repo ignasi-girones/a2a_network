@@ -32,8 +32,8 @@ logger = logging.getLogger(__name__)
 
 PLANNER_SYSTEM_PROMPT = """\
 You are the Planner of an agentic orchestrator. Your job is to decompose a
-user request into a DAG of sub-tasks that can be delegated to specialized
-worker agents.
+user request into a small DAG (1-8 nodes) of sub-tasks that can be delegated
+to specialized worker agents.
 
 You will receive a catalog of available workers with their skills. Every
 `required_skill` in your plan MUST match an `id` from that catalog.
@@ -56,6 +56,16 @@ Return ONLY valid JSON with this exact shape:
 ═══════ GENERAL RULES ═══════
 - IDs are short strings ("t1", "t2", ...), unique within the plan.
 - `depends_on` lists earlier IDs whose output this subtask needs as context.
+- `perspective` is only meaningful for debate-style workers; use null otherwise.
+- Choose the workflow dynamically based on the user request and available
+  skills. Normalization is OPTIONAL: include it only when the input is messy,
+  ambiguous, or unstructured. If the request is already clear/structured,
+  you may skip normalization.
+- You may create either:
+  - a direct single-worker workflow (for simple requests), or
+  - a multi-step workflow (for complex requests), optionally with parallel
+    branches and a final synthesis/formatting step.
+- Use only the minimum necessary subtasks; avoid adding boilerplate steps.
 - CRITICAL: `required_skill` MUST be copied VERBATIM from the catalog's skill
   `id` field. Never invent, translate, or generalize a skill name. If the
   catalog offers `normalize_input`, `debate`, `format_verdict` then those are
@@ -310,6 +320,10 @@ class Planner:
         self.model = model
         self.temperature = temperature
         self.max_tokens = max_tokens
+        # Observability: how the last successful plan was obtained.
+        # - "llm": parsed/validated directly from model output
+        # - "fallback": built by deterministic fallback logic
+        self.last_plan_source: str = "unknown"
 
     async def create_plan(
         self,
@@ -355,6 +369,7 @@ class Planner:
                     len(plan.subtasks),
                     plan.goal,
                 )
+                self.last_plan_source = "llm"
                 return plan
             except (json.JSONDecodeError, ValueError) as e:
                 logger.warning(
@@ -370,59 +385,72 @@ class Planner:
                     ),
                 })
 
-        # Last-resort fallback: linear normalize → debate(pro) || debate(con) →
-        # format_verdict, IF those skills exist in the catalog. Otherwise raise.
+        # Last-resort fallback: build a minimal viable plan from currently
+        # available skills. This avoids hard-binding the orchestrator to the
+        # debate template when the planner LLM response is invalid.
         skill_ids = {
             s.get("id")
             for w in workers
             for s in (w.get("skills") or [])
+            if s.get("id")
         }
-        if {"normalize_input", "debate", "format_verdict"} <= skill_ids:
-            logger.warning("Falling back to default debate plan")
-            return TaskPlan(
-                goal=user_input[:120],
-                subtasks=[
-                    SubTask(
-                        id="t1",
-                        description=(
-                            "Normalize the user request into structured JSON "
-                            "with topic, domain, and perspectives."
-                        ),
-                        required_skill="normalize_input",
+        if not skill_ids:
+            raise RuntimeError("Planner failed to produce a valid plan")
+
+        logger.warning("Falling back to minimal skill-driven plan")
+        self.last_plan_source = "fallback"
+        subtasks: list[SubTask] = []
+        next_id = 1
+
+        normalize_needed = (
+            "normalize_input" in skill_ids and not _looks_structured(user_input)
+        )
+        if normalize_needed:
+            subtasks.append(
+                SubTask(
+                    id=f"t{next_id}",
+                    description=(
+                        "Normalize the user request into a concise structured "
+                        "representation preserving intent and constraints."
                     ),
-                    SubTask(
-                        id="t2",
-                        description=(
-                            "Argue in favor of the proposal using the "
-                            "normalized topic as context."
-                        ),
-                        required_skill="debate",
-                        depends_on=["t1"],
-                        perspective="pro",
-                    ),
-                    SubTask(
-                        id="t3",
-                        description=(
-                            "Argue against the proposal using the "
-                            "normalized topic as context."
-                        ),
-                        required_skill="debate",
-                        depends_on=["t1"],
-                        perspective="con",
-                    ),
-                    SubTask(
-                        id="t4",
-                        description=(
-                            "Produce a human-readable verdict synthesizing "
-                            "both sides of the debate."
-                        ),
-                        required_skill="format_verdict",
-                        depends_on=["t2", "t3"],
-                    ),
-                ],
-                max_workers=3,
+                    required_skill="normalize_input",
+                )
             )
-        raise RuntimeError("Planner failed to produce a valid plan")
+            next_id += 1
+
+        core_skill = _pick_core_skill(skill_ids)
+        core_depends = [subtasks[-1].id] if subtasks else []
+        subtasks.append(
+            SubTask(
+                id=f"t{next_id}",
+                description=(
+                    "Produce the best possible answer to the user request, "
+                    "using any provided context from previous steps."
+                ),
+                required_skill=core_skill,
+                depends_on=core_depends,
+            )
+        )
+        next_id += 1
+
+        if "format_verdict" in skill_ids and core_skill != "format_verdict":
+            subtasks.append(
+                SubTask(
+                    id=f"t{next_id}",
+                    description=(
+                        "Format the previous output into a clear, concise, "
+                        "human-readable final response."
+                    ),
+                    required_skill="format_verdict",
+                    depends_on=[f"t{next_id - 1}"],
+                )
+            )
+
+        return TaskPlan(
+            goal=user_input[:120],
+            subtasks=subtasks,
+            max_workers=min(4, max(1, len(subtasks))),
+        )
 
     async def extend_for_consensus(
         self,
@@ -580,3 +608,40 @@ class Planner:
             response_format={"type": "json_object"},
         )
         return _parse_plan(raw, known_skills=known_skills)
+
+
+def _looks_structured(text: str) -> bool:
+    """Heuristic: detect prompts that likely don't need normalization."""
+    stripped = text.strip()
+    if not stripped:
+        return False
+    if stripped.startswith("{") or stripped.startswith("["):
+        return True
+    lowered = stripped.lower()
+    markers = ("topic:", "goal:", "constraints:", "input:", "task:")
+    if any(m in lowered for m in markers):
+        return True
+    if len(stripped) <= 100:
+        return True
+    return False
+
+
+def _pick_core_skill(skill_ids: set[str]) -> str:
+    """Pick a primary execution skill from available capabilities."""
+    preferred = [
+        s for s in (
+            "debate",
+            "analyze",
+            "analysis",
+            "reasoning",
+            "qa",
+            "answer",
+            "format_verdict",
+            "normalize_input",
+        )
+        if s in skill_ids
+    ]
+    if preferred:
+        return preferred[0]
+    # Stable fallback for arbitrary skill catalogs.
+    return sorted(skill_ids)[0]

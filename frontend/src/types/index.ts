@@ -13,6 +13,8 @@ export interface TaskPlan {
   max_workers?: number;
 }
 
+export type PlanSource = 'llm' | 'fallback' | 'unknown';
+
 // ── Per-subtask runtime state derived from streaming events ──
 export type SubtaskStatus = 'pending' | 'running' | 'done' | 'failed';
 
@@ -54,6 +56,7 @@ export interface DebateEvent {
   data?: {
     // Agentic flow
     plan?: TaskPlan;
+    plan_source?: PlanSource;
     subtask_id?: string;
     subtask_ids?: string[];
     worker_id?: string;

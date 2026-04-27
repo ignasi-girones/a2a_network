@@ -1,4 +1,4 @@
-"""Unit tests for the Planner.
+﻿"""Unit tests for the Planner.
 
 `llm_complete` is monkey-patched to return canned responses so no real LLM
 call goes out. The focus is validation logic and the fallback/retry paths.
@@ -22,7 +22,7 @@ from common.models import TaskPlan
 pytestmark = pytest.mark.asyncio
 
 
-# ── _format_worker_catalog ──────────────────────────────────────────────────
+# â”€â”€ _format_worker_catalog â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 class TestFormatWorkerCatalog:
@@ -53,7 +53,7 @@ class TestFormatWorkerCatalog:
         assert "'Debate'" in out
 
 
-# ── _parse_plan validation ───────────────────────────────────────────────────
+# â”€â”€ _parse_plan validation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 class TestParsePlan:
@@ -117,7 +117,7 @@ class TestParsePlan:
             _parse_plan("not json")
 
 
-# ── Planner.create_plan ──────────────────────────────────────────────────────
+# â”€â”€ Planner.create_plan â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 CATALOG_FULL = [
@@ -141,7 +141,7 @@ CATALOG_FULL = [
 
 class TestPlannerCreate:
     async def test_happy_path(self, monkeypatch):
-        """First LLM response is valid JSON — returned directly."""
+        """First LLM response is valid JSON â€” returned directly."""
         valid = json.dumps(
             {
                 "goal": "test",
@@ -160,9 +160,10 @@ class TestPlannerCreate:
         plan = await planner.create_plan("hello", CATALOG_FULL)
         assert plan.goal == "test"
         assert len(plan.subtasks) == 1
+        assert planner.last_plan_source == "llm"
 
     async def test_retry_on_malformed_then_success(self, monkeypatch):
-        """First response is bad JSON, second is good — planner retries once."""
+        """First response is bad JSON, second is good â€” planner retries once."""
         responses = iter(
             [
                 "not json at all",
@@ -187,7 +188,7 @@ class TestPlannerCreate:
         assert plan.subtasks[0].id == "t1"
 
     async def test_fallback_plan_when_all_retries_fail(self, monkeypatch):
-        """Both attempts fail → fallback to default debate plan (since catalog has all 3 skills)."""
+        """Retries fail -> fallback builds a minimal skill-driven plan."""
 
         async def always_bad(**kwargs):
             return "garbage"
@@ -196,20 +197,21 @@ class TestPlannerCreate:
 
         planner = Planner(model="fake/model")
         plan = await planner.create_plan("hello", CATALOG_FULL)
-        # Fallback plan: normalize → debate pro || debate con → format_verdict
+        # "hello" is considered structured enough to skip normalization.
         skills = {t.required_skill for t in plan.subtasks}
-        assert skills == {"normalize_input", "debate", "format_verdict"}
-        assert len(plan.subtasks) == 4
+        assert skills == {"debate", "format_verdict"}
+        assert len(plan.subtasks) == 2
+        assert planner.last_plan_source == "fallback"
 
     async def test_fallback_fails_when_skills_missing(self, monkeypatch):
-        """If the catalog lacks any of the fallback skills, planner raises."""
+        """Fallback still works with partial catalogs (single core skill)."""
 
         async def always_bad(**kwargs):
             return "garbage"
 
         monkeypatch.setattr(planner_module, "llm_complete", always_bad)
 
-        # Catalog has only 'debate' — missing normalize_input and format_verdict
+        # Catalog has only 'debate'.
         minimal_catalog = [
             {
                 "agent_id": "ae1",
@@ -219,5 +221,7 @@ class TestPlannerCreate:
         ]
 
         planner = Planner(model="fake/model")
-        with pytest.raises(RuntimeError, match="failed to produce"):
-            await planner.create_plan("hello", minimal_catalog)
+        plan = await planner.create_plan("hello", minimal_catalog)
+        assert len(plan.subtasks) == 1
+        assert plan.subtasks[0].required_skill == "debate"
+        assert planner.last_plan_source == "fallback"

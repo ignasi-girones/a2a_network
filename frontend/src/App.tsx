@@ -11,6 +11,7 @@ import type {
   ConsensusSnapshot,
   DebateEvent,
   DebateState,
+  PlanSource,
   SubtaskRuntime,
   TaskPlan,
 } from './types';
@@ -27,6 +28,7 @@ interface ModelMap {
 
 interface ExtendedState extends DebateState {
   plan: TaskPlan | null;
+  planSource: PlanSource;
   runtime: Record<string, SubtaskRuntime>;
   positions: AgentPositionsSample[];
   consensusHistory: ConsensusSnapshot[];
@@ -89,6 +91,7 @@ function App() {
     verdict: null,
     error: null,
     plan: null,
+    planSource: 'unknown',
     runtime: {},
     positions: [],
     consensusHistory: [],
@@ -130,6 +133,7 @@ function App() {
       verdict: null,
       error: null,
       plan: null,
+      planSource: 'unknown',
       runtime: {},
       positions: [],
       consensusHistory: [],
@@ -147,7 +151,11 @@ function App() {
           const incomingPlan =
             event.stage === 'plan_ready' && event.data?.plan
               ? (event.data.plan as TaskPlan)
-              : null;
+              : prev.plan;
+          const nextPlanSource =
+            event.stage === 'plan_ready' && event.data?.plan_source
+              ? (event.data.plan_source as PlanSource)
+              : prev.planSource;
 
           let nextPlan = prev.plan;
           let baseRuntime = prev.runtime;
@@ -248,6 +256,7 @@ function App() {
             ...prev,
             events: [...prev.events, event],
             plan: nextPlan,
+            planSource: nextPlanSource,
             runtime: applyEventToRuntime(baseRuntime, event),
             positions: nextPositions,
             consensusHistory: nextConsensus,
@@ -358,9 +367,31 @@ function App() {
                   </span>
                 )}
               </h2>
-              <span className="text-[10px] text-gray-400">
+              {state.plan && (
+                <span
+                  className={`text-[10px] px-2 py-1 rounded font-semibold ${
+                    state.planSource === 'llm'
+                      ? 'bg-emerald-100 text-emerald-700'
+                      : state.planSource === 'fallback'
+                      ? 'bg-amber-100 text-amber-700'
+                      : 'bg-gray-100 text-gray-600'
+                  }`}
+                  title={
+                    state.planSource === 'llm'
+                      ? 'Plan generado y validado desde salida del LLM'
+                      : state.planSource === 'fallback'
+                      ? 'Plan generado por fallback determinista'
+                      : 'Origen del plan no disponible'
+                  }
+                >
+                  Plan: {state.planSource === 'llm' ? 'LLM' : state.planSource === 'fallback' ? 'Fallback' : 'Unknown'}
+                </span>
+              )}
+              {!state.plan && (
+                <span className="text-[10px] text-gray-400">
                 Haz clic en un nodo para ver su salida
-              </span>
+                </span>
+              )}
             </div>
             <DebateGraph plan={state.plan} runtime={state.runtime} />
           </div>

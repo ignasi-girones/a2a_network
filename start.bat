@@ -3,6 +3,16 @@ setlocal
 
 set "ROOT=%~dp0"
 set "PYTHONPATH=%ROOT%"
+set "PYTHON_EXE=%ROOT%.venv\Scripts\python.exe"
+
+if not exist "%PYTHON_EXE%" (
+    set "PYTHON_EXE=python"
+    echo [WARN] No se encontro .venv\Scripts\python.exe, usando Python global.
+    echo [WARN] Recomendado:
+    echo        py -3.12 -m venv .venv
+    echo        .venv\Scripts\python -m pip install -e ".[dev]"
+    echo.
+)
 
 echo ==========================================
 echo   A2A Debate Network - Launcher
@@ -18,23 +28,23 @@ echo Modo: terminales separadas
 echo.
 
 REM Fila superior: MCP Tools, Normalizer, AE1
-start "MCP Tools :8085" cmd /k "cd /d %ROOT% && set PYTHONPATH=%ROOT% && title MCP Tools :8085 && mode con: cols=80 lines=25 && python -m agents.mcp_tools.server"
+start "MCP Tools :8085" cmd /k "cd /d %ROOT% && set PYTHONPATH=%ROOT% && title MCP Tools :8085 && mode con: cols=80 lines=25 && %PYTHON_EXE% -m agents.mcp_tools.server"
 timeout /t 1 /nobreak >nul
 
-start "Normalizer :8081" cmd /k "cd /d %ROOT% && set PYTHONPATH=%ROOT% && title Normalizer :8081 && mode con: cols=80 lines=25 && python -m agents.normalizer"
+start "Normalizer :8081" cmd /k "cd /d %ROOT% && set PYTHONPATH=%ROOT% && title Normalizer :8081 && mode con: cols=80 lines=25 && %PYTHON_EXE% -m agents.normalizer"
 timeout /t 1 /nobreak >nul
 
-start "AE1 :8082" cmd /k "cd /d %ROOT% && set PYTHONPATH=%ROOT% && title AE1 :8082 && mode con: cols=80 lines=25 && python -m agents.specialized --port 8082 --agent-id ae1"
+start "AE1 :8082" cmd /k "cd /d %ROOT% && set PYTHONPATH=%ROOT% && title AE1 :8082 && mode con: cols=80 lines=25 && %PYTHON_EXE% -m agents.specialized --port 8082 --agent-id ae1"
 timeout /t 1 /nobreak >nul
 
-start "AE2 :8083" cmd /k "cd /d %ROOT% && set PYTHONPATH=%ROOT% && title AE2 :8083 && mode con: cols=80 lines=25 && python -m agents.specialized --port 8083 --agent-id ae2"
+start "AE2 :8083" cmd /k "cd /d %ROOT% && set PYTHONPATH=%ROOT% && title AE2 :8083 && mode con: cols=80 lines=25 && %PYTHON_EXE% -m agents.specialized --port 8083 --agent-id ae2"
 timeout /t 1 /nobreak >nul
 
 REM Fila inferior: Feedback, Orchestrator, Frontend
-start "Feedback :8084" cmd /k "cd /d %ROOT% && set PYTHONPATH=%ROOT% && title Feedback :8084 && mode con: cols=80 lines=25 && python -m agents.feedback"
+start "Feedback :8084" cmd /k "cd /d %ROOT% && set PYTHONPATH=%ROOT% && title Feedback :8084 && mode con: cols=80 lines=25 && %PYTHON_EXE% -m agents.feedback"
 timeout /t 1 /nobreak >nul
 
-start "Orchestrator :8080" cmd /k "cd /d %ROOT% && set PYTHONPATH=%ROOT% && title Orchestrator :8080 && mode con: cols=80 lines=25 && python -m agents.orchestrator"
+start "Orchestrator :8080" cmd /k "cd /d %ROOT% && set PYTHONPATH=%ROOT% && title Orchestrator :8080 && mode con: cols=80 lines=25 && %PYTHON_EXE% -m agents.orchestrator"
 timeout /t 2 /nobreak >nul
 
 start "Frontend :8086" cmd /k "cd /d %ROOT%frontend && title Frontend :8086 && mode con: cols=80 lines=25 && npm run dev"
@@ -58,13 +68,13 @@ echo.
 if "%1"=="--stop" goto :stop
 
 echo Arrancando agentes...
-start /b "" python -m agents.mcp_tools.server
-start /b "" python -m agents.normalizer
-start /b "" python -m agents.feedback
-start /b "" python -m agents.specialized --port 8082 --agent-id ae1
-start /b "" python -m agents.specialized --port 8083 --agent-id ae2
+start /b "" "%PYTHON_EXE%" -m agents.mcp_tools.server
+start /b "" "%PYTHON_EXE%" -m agents.normalizer
+start /b "" "%PYTHON_EXE%" -m agents.feedback
+start /b "" "%PYTHON_EXE%" -m agents.specialized --port 8082 --agent-id ae1
+start /b "" "%PYTHON_EXE%" -m agents.specialized --port 8083 --agent-id ae2
 timeout /t 2 /nobreak >nul
-start /b "" python -m agents.orchestrator
+start /b "" "%PYTHON_EXE%" -m agents.orchestrator
 timeout /t 1 /nobreak >nul
 
 echo.

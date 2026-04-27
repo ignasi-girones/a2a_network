@@ -213,7 +213,19 @@ class AgenticOrchestrator:
             await self.progress.on_progress(
                 "plan_ready",
                 f"Plan generado: {len(plan.subtasks)} subtareas",
-                {"plan": plan.model_dump()},
+                {
+                    "plan": plan.model_dump(),
+                    "plan_source": self.planner.last_plan_source,
+                },
+            )
+            await self.progress.on_progress(
+                "plan_source",
+                (
+                    "Plan generado por LLM"
+                    if self.planner.last_plan_source == "llm"
+                    else "Plan generado por fallback"
+                ),
+                {"plan_source": self.planner.last_plan_source},
             )
 
             # 3. Pre-flight: spawn workers if peak concurrent demand exceeds supply
@@ -639,10 +651,9 @@ class AgenticOrchestrator:
     ) -> str:
         """Collapse subtask outputs into a single user-facing answer.
 
-        Strategy: if any subtask has no successors, its output IS the final
-        answer (common when the plan ends with a format_verdict step).
-        Otherwise we ask the orchestrator's LLM to synthesize from all
-        subtask outputs.
+        Strategy: if there is a single sink and it is a dedicated formatting
+        step (`format_verdict`), use it as final answer. Otherwise ask the
+        orchestrator's LLM to synthesize from all subtask outputs.
         """
         # Find subtasks that are not depended on by anyone = sinks.
         depended_on: set[str] = {
@@ -650,7 +661,7 @@ class AgenticOrchestrator:
         }
         sinks = [t for t in plan.subtasks if t.id not in depended_on]
 
-        if len(sinks) == 1:
+        if len(sinks) == 1 and sinks[0].required_skill == "format_verdict":
             sink = sinks[0]
             await self.progress.on_progress(
                 "synthesize",

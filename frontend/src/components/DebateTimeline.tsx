@@ -85,6 +85,7 @@ function getEventStyle(event: DebateEvent) {
   if (
     stage === 'complete' ||
     stage === 'plan_complete' ||
+    stage === 'plan_source' ||
     stage === 'synthesize'
   ) {
     return {

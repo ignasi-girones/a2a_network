@@ -12,4 +12,4 @@ frontend/dist/
 .vite/
 *.db
 *.sqlite
-logs/
+.venv/
