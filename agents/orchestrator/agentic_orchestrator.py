@@ -25,7 +25,7 @@ from collections import Counter, defaultdict
 from typing import Any
 
 from agents.orchestrator.agent_registry import AgentRegistry
-from agents.orchestrator.deliberation_loop import DEBATE_ROLES, DeliberationLoop
+from agents.orchestrator.deliberation_loop import DeliberationLoop
 from agents.orchestrator.plan_executor import PlanExecutionError, PlanExecutor, ProgressCallback
 from agents.orchestrator.planner import Planner
 from agents.orchestrator.worker_spawner import WorkerSpawner

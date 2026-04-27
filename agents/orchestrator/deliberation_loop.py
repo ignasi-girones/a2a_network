@@ -31,7 +31,6 @@ from agents.orchestrator.discussion_ledger import (
     append as ledger_append,
     build_self_position_section,
     format_for_prompt,
-    latest_for_role,
     role_label,
 )
 from agents.orchestrator.plan_executor import (

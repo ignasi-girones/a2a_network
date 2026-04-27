@@ -21,7 +21,6 @@ from agents.orchestrator.agentic_orchestrator import (
     _role_from_skill,
 )
 from agents.orchestrator.plan_executor import ProgressCallback
-from agents.orchestrator.planner import _build_quartet_plan
 from common.models import CANONICAL_ROLES, SubTask, TaskPlan, WorkerEntry
 
 
