@@ -60,15 +60,56 @@ the plan."""
 CONSENSUS_CHECK_PROMPT = """\
 Three debate agents have just exchanged their latest arguments in a structured
 deliberation:
- - AE1 typically advocates one side
- - AE2 typically advocates the opposing side
- - AE3 acts as a neutral mediator / third perspective
+ - AE1 opened by advocating one side
+ - AE2 opened by advocating the opposing side
+ - AE3 is an independent evaluator with no assigned stance
 
-Evaluate whether they have substantively converged on a shared answer, and
-score each agent's position on a continuous axis where:
-   0.0 = fully aligned with AE1's initial stance (one extreme)
-   1.0 = fully aligned with AE2's initial stance (the opposite extreme)
-   0.5 = neutral / undecided / mediator-like
+Your job is to evaluate whether they have substantively converged on a
+shared, evidence-driven answer — and to score each agent's CURRENT position
+on a continuous axis where:
+   0.0 = endorses AE1's opening stance
+   1.0 = endorses AE2's opening stance
+   0.5 = no clear position either way (genuinely balanced or evasive)
+
+CRITICAL — read this before scoring:
+1. Score where each agent IS NOW, not where they started. If AE1 has
+   genuinely changed sides and now endorses AE2's stance, AE1's position
+   should be HIGH (close to 1.0), not low. The same applies in reverse.
+2. Look for explicit side-shift markers like "You changed my mind on X",
+   "I now agree with...", "the evidence on X is decisive". Treat these as
+   strong signals to move that agent toward the side they shifted to.
+3. Do NOT reward forced centrism. Two patterns to flag:
+   a. "Both have a point" with no specific commitments — this is evasion,
+      not consensus. agreement_score should be LOW even if all three sit
+      near 0.5, because there is no real shared position.
+   b. Wishy-washy "common ground" that doesn't actually answer the
+      question — same treatment.
+4. Reward HONEST CONVERGENCE TOWARD A SIDE. If the evidence presented
+   clearly favours one side and all three agents have moved toward it
+   (positions clustered near 0.0 OR clustered near 1.0), that is a high
+   agreement_score — possibly higher than a clustering near 0.5.
+5. Only assign agreement_score >= 0.75 when the three latest positions
+   actually agree on a SUBSTANTIVE answer to the original question, not
+   just on procedural tone. The shared_points list must contain concrete
+   claims, not platitudes.
+
+HARD CONSISTENCY RULE — agreement_score MUST track positions:
+The `agreement_score` is the geometric clustering of `positions`, NOT a
+separate "tone" or "vibes" metric. Use this scale, anchored to the spread
+between the highest and lowest position values (max − min):
+   spread <= 0.15  →  agreement_score in [0.85, 1.00]   (tight cluster)
+   spread <= 0.25  →  agreement_score in [0.70, 0.85]
+   spread <= 0.40  →  agreement_score in [0.50, 0.70]
+   spread <= 0.60  →  agreement_score in [0.30, 0.50]
+   spread >  0.60  →  agreement_score in [0.00, 0.30]   (clearly apart)
+If you see one agent at 0.05 and another at 0.92 (spread > 0.85), the
+agreement_score CANNOT be high — it must be in [0.00, 0.30] no matter how
+politely worded the messages were. Polite tone is not consensus.
+
+You may bias slightly within each band based on the *quality* of the
+agreement (concrete shared_points push toward the high end of the band;
+vague platitudes push toward the low end). But you must stay inside the
+band the spread dictates.
 
 AE1 latest position ({ae1_perspective}):
 {ae1_text}
@@ -87,18 +128,21 @@ Return ONLY valid JSON with this exact shape:
     "ae2": <float 0.0 to 1.0>,
     "ae3": <float 0.0 to 1.0>
   }},
-  "shared_points": ["..."],
-  "remaining_disagreements": ["..."],
-  "reason": "<one-sentence rationale>"
+  "shared_points": ["concrete claim 1", "..."],
+  "remaining_disagreements": ["concrete disagreement 1", "..."],
+  "reason": "<one-sentence rationale that mentions whether convergence is toward AE1's side, AE2's side, the centre, or unclear>"
 }}
 
 agreement_score interpretation:
-- >= 0.75: substantive consensus, no further rounds needed
-- 0.50 - 0.74: partial convergence, one synthesis round could close the gap
-- < 0.50: still meaningfully apart
+- >= 0.75: substantive consensus on the actual question, no further rounds needed
+- 0.50 - 0.74: partial convergence, one re-evaluation round could close the gap
+- < 0.50: still meaningfully apart, OR all three are using vague centrist
+  language without committing to a real answer (vagueness is NOT consensus)
 
 The `positions` object is what the UI uses to plot how the agents are moving
-toward each other across rounds — be diligent and consistent."""
+across rounds — be diligent and consistent. A position score reflects
+endorsement of a side based on the agent's current claims; movement across
+rounds is what the user is watching for."""
 
 
 def _peak_concurrent_demand(plan: TaskPlan) -> dict[str, int]:
@@ -408,8 +452,44 @@ class AgenticOrchestrator:
             disagreements = [
                 str(p).strip() for p in (data.get("remaining_disagreements") or []) if p
             ]
+            score = max(0.0, min(1.0, score))
+
+            # Backstop: enforce that agreement_score actually tracks the
+            # geometric spread of positions, even if the LLM ignored the
+            # consistency rule in the prompt. Otherwise the user sees
+            # contradictions like "agreement 0.92" while AE1 sits at 0.05
+            # and AE2 at 0.92 (positions clearly apart).
+            pos_values = [v for v in positions.values() if v is not None]
+            if len(pos_values) >= 2:
+                spread = max(pos_values) - min(pos_values)
+                # Same bands as the prompt; we cap the LLM's score to the
+                # top of the band the spread dictates so it can never claim
+                # more agreement than the geometry shows.
+                if spread <= 0.15:
+                    cap = 1.00
+                elif spread <= 0.25:
+                    cap = 0.85
+                elif spread <= 0.40:
+                    cap = 0.70
+                elif spread <= 0.60:
+                    cap = 0.50
+                else:
+                    cap = 0.30
+                if score > cap:
+                    logger.info(
+                        "Capping agreement_score %.2f → %.2f because position "
+                        "spread is %.2f (positions=%s)",
+                        score, cap, spread, positions,
+                    )
+                    score = cap
+                    reason = (
+                        f"{reason} [score capped to {cap:.2f} by orchestrator "
+                        f"because position spread {spread:.2f} is too wide for "
+                        f"a higher agreement score]"
+                    )
+
             return (
-                max(0.0, min(1.0, score)),
+                score,
                 reason,
                 positions,
                 shared,

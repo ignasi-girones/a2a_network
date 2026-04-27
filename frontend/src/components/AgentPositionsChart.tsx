@@ -185,7 +185,7 @@ export function AgentPositionsChart({ samples }: Props) {
             fontSize={9}
             fill="#7c3aed"
           >
-            neutral
+            neutro
           </text>
 
           {/* X-axis labels (round numbers) */}

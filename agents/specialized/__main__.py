@@ -47,6 +47,15 @@ def main():
     else:
         model = settings.ae2_model
 
+    # Log the resolved model explicitly so it's easy to confirm the .env
+    # value (or the default in common.config.Settings) actually got picked up.
+    logging.getLogger(__name__).info(
+        "Specialized agent %s resolved to model %s (env var %s_MODEL)",
+        agent_id.upper(),
+        model,
+        agent_id.upper(),
+    )
+
     # Create mutable state
     state = AgentState(agent_id=agent_id)
 

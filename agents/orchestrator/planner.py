@@ -81,26 +81,31 @@ Required structure (exactly 4 subtasks):
 2. THREE parallel `debate` subtasks for INITIAL OPINIONS (deps: [t1]):
    - AE1: an advocate for one side ("ae1: <role + stance>")
    - AE2: an advocate for the opposing side ("ae2: <opposing role + stance>")
-   - AE3: a NEUTRAL moderator / third-perspective voice
-     ("ae3: Mediator, neutral — finds common ground").
+   - AE3: an INDEPENDENT EVALUATOR who does NOT have a stance assigned
+     ("ae3: Independent evaluator").
    The first two roles MUST be CONTRASTING (e.g. DevOps Engineer vs Team
-   Lead). AE3 must NOT pick a side — it observes both, summarises strongest
-   shared points, and proposes integrative framings.
+   Lead). AE3 is NOT a mediator looking for a middle ground — AE3 is an
+   evidence-driven evaluator who will side with whichever position has the
+   strongest arguments, even if that means fully endorsing AE1 or AE2.
 
 For each `debate` subtask, the `description` MUST include:
    - "ROLE: <the role>"
-   - "PERSPECTIVE: <the stance — for AE3 say 'neutral mediator'>"
+   - "PERSPECTIVE: <stance for AE1/AE2; 'independent evaluator, sides with the
+      strongest arguments' for AE3>"
    - "ROUND: opening"
-   - "GOAL: <for AE1/AE2> state your initial position clearly so the others
-      can respond to it — but stay open to revising it in later rounds.
-      <for AE3> identify likely shared ground in advance and frame the
-      tradeoffs each side will face."
+   - "GOAL: <for AE1/AE2> argue your initial position with the strongest
+      evidence you can muster, but stay genuinely open to changing your mind
+      if the opposing side presents stronger evidence.
+      <for AE3> read both opening positions when they arrive (this is the
+      opening round so write your initial assessment of the tradeoffs).
+      Do NOT default to splitting the difference — if you already see one
+      side as more grounded, say so."
    - "Format: AGREEMENTS: ... / REFINEMENT: ..."
 
 CRITICAL — `perspective` field convention for debate subtasks:
    - Initial opinion AE1: "ae1: <role>, <stance>"
    - Initial opinion AE2: "ae2: <role>, <stance>"
-   - Initial opinion AE3: "ae3: Mediator, neutral"
+   - Initial opinion AE3: "ae3: Independent evaluator"
    The "ae1:" / "ae2:" / "ae3:" prefix is MANDATORY — the executor uses it to
    label each agent's own prior arguments vs the others' when assembling
    context, and the consensus loop uses it to identify each agent's latest
@@ -118,7 +123,7 @@ analytic steps → format_verdict. No rounds.
     {"id":"t1","description":"Normalize the request into structured JSON","required_skill":"normalize_input","depends_on":[],"perspective":null},
     {"id":"t2","description":"ROLE: DevOps Engineer. PERSPECTIVE: Remote work boosts productivity. ROUND: opening. GOAL: state your initial position clearly so the others can respond to it — but stay open to revising it in later rounds. Format: AGREEMENTS: / REFINEMENT:","required_skill":"debate","depends_on":["t1"],"perspective":"ae1: DevOps Engineer, pro-remote"},
     {"id":"t3","description":"ROLE: Team Lead. PERSPECTIVE: In-person work strengthens cohesion. ROUND: opening. GOAL: state your initial position clearly so the others can respond to it — but stay open to revising it in later rounds. Format: AGREEMENTS: / REFINEMENT:","required_skill":"debate","depends_on":["t1"],"perspective":"ae2: Team Lead, pro-onsite"},
-    {"id":"t4","description":"ROLE: Mediator. PERSPECTIVE: neutral mediator. ROUND: opening. GOAL: identify likely shared ground in advance and frame the tradeoffs each side will face. Do NOT advocate for either side. Format: AGREEMENTS: / REFINEMENT:","required_skill":"debate","depends_on":["t1"],"perspective":"ae3: Mediator, neutral"}
+    {"id":"t4","description":"ROLE: Independent evaluator. PERSPECTIVE: no assigned stance — sides with the strongest arguments. ROUND: opening. GOAL: write your initial assessment of the tradeoffs based on what you currently know about the topic. Do NOT default to splitting the difference; if one position is already more clearly grounded in evidence, say so. Format: AGREEMENTS: / REFINEMENT:","required_skill":"debate","depends_on":["t1"],"perspective":"ae3: Independent evaluator"}
   ],
   "max_workers": 3
 }
@@ -150,33 +155,62 @@ Rules:
 - Produce EXACTLY THREE subtasks, all `required_skill = "debate"`. No
   `normalize_input`, no `format_verdict` — the orchestrator handles the final
   synthesis itself once consensus is reached or the round budget is exhausted.
-- All three subtasks MUST be SYNTHESIS rounds: instruct each agent to lead
-  with shared ground (use the AGREEMENTS section heavily), concede stronger
-  points the others made, and converge toward a unified answer rather than
-  defend the original stance. AE3 (the mediator) should explicitly propose a
-  bridging answer combining what AE1 and AE2 each got right.
+- All three subtasks MUST be HONEST RE-EVALUATION rounds. Convergence is the
+  goal, but FORCED CENTRISM IS NOT. The instructions you write must:
+  1. Tell each agent to genuinely re-weigh both sides on the merits of the
+     evidence presented so far, not to defend the role they were assigned.
+  2. Make explicit that CHANGING SIDES is encouraged when warranted: if AE1
+     finds AE2's evidence stronger overall, AE1 should say "You changed my
+     mind — I now agree that <X>" and shift its position toward AE2's stance.
+     The same applies in reverse.
+  3. Forbid vague "both sides have a point" language used to avoid
+     confrontation. If one side is clearly stronger, the agents should say so
+     and converge TOWARD that side, not toward the centre.
+  4. AE3 must NOT default to mediating between AE1 and AE2. AE3 weighs the
+     evidence independently and explicitly endorses the side it finds
+     better-grounded — including a full endorsement of AE1 or AE2 when
+     warranted. Saying "they are both right in their own way" is a failure
+     mode for AE3 unless the evidence genuinely is balanced.
+  5. The desired outcome is an *evidence-driven* convergence: ideally the
+     three agents end up close to each other AND close to whichever stance
+     the strongest evidence supports — not at 0.5 by default.
 - Use `perspective` with the "ae1: ..." / "ae2: ..." / "ae3: ..." convention.
   Use round labels like "ae1: synthesis 1", "ae2: synthesis 1",
   "ae3: synthesis 1" (or 2, 3, ...) reflecting how many synthesis rounds have
   already happened.
-- `depends_on` for each new subtask MUST include the latest debate subtask IDs
-  for each of the three agents (you will be told which IDs those are) so each
-  agent sees the most recent arguments from all peers.
-- The orchestrator will tell you the consensus reason — address that gap
-  explicitly in the new subtasks' descriptions.
 
-═══════ EXAMPLE: synthesis extension (3 subtasks) ═══════
+CRITICAL — PARALLEL DEPS, NOT SEQUENTIAL:
+- The three new subtasks must run IN PARALLEL within this round. Therefore
+  `depends_on` for ALL THREE new subtasks MUST be the SAME set: the latest
+  debate subtask IDs for each of the three agents from the PREVIOUS round
+  (you will be told exactly which IDs those are).
+- Do NOT make x2 depend on x1, or x3 depend on x1/x2. That would force a
+  sequential chain inside the same round, which means the first agent never
+  sees what the others say in this round and only the last agent sees
+  everyone. We want every agent to react to the same shared snapshot of the
+  previous round.
+- The orchestrator will tell you the consensus reason — address that gap
+  explicitly in each subtask's description.
+
+═══════ EXAMPLE: re-evaluation extension (3 subtasks, all parallel) ═══════
 Given the original plan ended with debate IDs t2 (ae1), t3 (ae2), t4 (ae3),
-and the consensus reason was "agents disagree on weighting of metric X":
+and the consensus reason was "AE2's evidence on metric X looks stronger but
+AE1 has not yet engaged with it":
 {
-  "goal": "Reach a unified answer on remote vs in-person work",
+  "goal": "Reach an evidence-driven answer on remote vs in-person work",
   "subtasks": [
-    {"id":"x1","description":"ROLE: DevOps Engineer. ROUND: synthesis 1. GOAL: lead with points you already accept from the others (AGREEMENTS heavy). Address the gap on metric X. Propose a unified position. Format: AGREEMENTS: / REFINEMENT:","required_skill":"debate","depends_on":["t2","t3","t4"],"perspective":"ae1: synthesis 1"},
-    {"id":"x2","description":"ROLE: Team Lead. ROUND: synthesis 1. GOAL: lead with points you already accept from the others (AGREEMENTS heavy). Address the gap on metric X. Propose a unified position. Format: AGREEMENTS: / REFINEMENT:","required_skill":"debate","depends_on":["t2","t3","t4","x1"],"perspective":"ae2: synthesis 1"},
-    {"id":"x3","description":"ROLE: Mediator. ROUND: synthesis 1. GOAL: propose an explicit bridging answer that combines AE1's and AE2's strongest points and resolves the metric-X gap. Stay neutral. Format: AGREEMENTS: / REFINEMENT:","required_skill":"debate","depends_on":["t2","t3","t4","x1","x2"],"perspective":"ae3: synthesis 1"}
+    {"id":"x1","description":"ROUND: re-evaluation 1. You entered as DevOps Engineer (pro-remote) but your task now is HONEST re-evaluation, not advocacy. Re-read AE2 and AE3's arguments from the previous round. Specifically engage with AE2's evidence on metric X — if it is stronger than your initial counter, say 'You changed my mind on X' and shift your overall stance toward AE2's. If after honest re-weighing you still find your initial side stronger, defend it with the new evidence. Do NOT settle for vague middle-ground language. Format: AGREEMENTS: / REFINEMENT:","required_skill":"debate","depends_on":["t2","t3","t4"],"perspective":"ae1: synthesis 1"},
+    {"id":"x2","description":"ROUND: re-evaluation 1. You entered as Team Lead (pro-onsite) but your task now is HONEST re-evaluation, not advocacy. Re-read AE1 and AE3's arguments from the previous round. If AE1's evidence has overturned any of your claims, concede explicitly and shift your stance. If you still find your initial side stronger after honest re-weighing, defend it. Do NOT settle for vague middle-ground language. Format: AGREEMENTS: / REFINEMENT:","required_skill":"debate","depends_on":["t2","t3","t4"],"perspective":"ae2: synthesis 1"},
+    {"id":"x3","description":"ROUND: re-evaluation 1. You are an independent evaluator, NOT a mediator. Weigh AE1's vs AE2's arguments strictly on evidence quality. If AE2's evidence on metric X is decisively stronger, endorse AE2's position — even fully — and explain why. Equally, if AE1's case is stronger, endorse AE1. Only stay near the middle if the evidence is genuinely balanced. Avoid 'both have a point' language unless you can defend it specifically. Format: AGREEMENTS: / REFINEMENT:","required_skill":"debate","depends_on":["t2","t3","t4"],"perspective":"ae3: synthesis 1"}
   ],
   "max_workers": 3
 }
+
+Notice all three `depends_on` are identical — the previous round's outputs
+only. That is deliberate: it gives every agent the same starting context.
+Notice also that NO description re-asserts the agent's initial role/stance
+as if it were still binding — the agents are explicitly told the previous
+role was a starting point, not a position to defend.
 """
 
 
@@ -470,6 +504,21 @@ class Planner:
                         f"Extension reuses existing IDs {sorted(clash)}; "
                         f"prefix new IDs with 'x'."
                     )
+                # Reject sequential chains inside the extension. The new
+                # subtasks must run in parallel — i.e. none of them can depend
+                # on another new subtask. This guarantees every agent reacts
+                # to the same shared snapshot of the previous round.
+                new_ids = {t.id for t in ext.subtasks}
+                for t in ext.subtasks:
+                    chained = set(t.depends_on) & new_ids
+                    if chained:
+                        raise ValueError(
+                            f"Subtask {t.id!r} depends on other new "
+                            f"subtask(s) {sorted(chained)}. The extension "
+                            f"must be PARALLEL: every new subtask must "
+                            f"depend ONLY on the previous round's outputs, "
+                            f"not on other new subtasks."
+                        )
                 logger.info(
                     "Planner produced %d extension subtasks for consensus push",
                     len(ext.subtasks),

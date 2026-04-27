@@ -65,6 +65,19 @@ export function ConsensusGauge({ history }: Props) {
   const verdict = classify(score);
   const needleAngle = scoreToAngle(score);
 
+  // Dispersion of agent positions on the AE1↔AE2 axis. A wide spread
+  // (close to 1.0) with a high score signals an LLM inconsistency — the
+  // backend already caps it, but we show it here so the user can audit.
+  const spread = (() => {
+    const p = latest?.positions;
+    if (!p) return null;
+    const vals = (['ae1', 'ae2', 'ae3'] as const)
+      .map((k) => p[k])
+      .filter((v): v is number => typeof v === 'number');
+    if (vals.length < 2) return null;
+    return Math.max(...vals) - Math.min(...vals);
+  })();
+
   // Pre-compute the colored arcs for each band of the gauge.
   const arcs = useMemo(
     () => [
@@ -200,13 +213,21 @@ export function ConsensusGauge({ history }: Props) {
           >
             {verdict.label}
           </span>
+          {spread !== null && (
+            <span
+              className="mt-1 text-[10px] text-gray-500 font-mono"
+              title="Diferencia entre la posición más alta y la más baja entre los 3 agentes. Si es alta y el score también, hay incoherencia."
+            >
+              dispersión: {spread.toFixed(2)}
+            </span>
+          )}
         </div>
 
         {/* Right-side: history sparkline + reason */}
         <div className="flex flex-col gap-2 text-xs text-gray-700">
           <div>
             <p className="text-[10px] uppercase tracking-wide text-gray-500 mb-1">
-              Evolución del score
+              Evolución temporal
             </p>
             <svg
               viewBox={`0 0 ${sparkW} ${sparkH}`}

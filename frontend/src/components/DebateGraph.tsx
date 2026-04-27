@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import type { PlanSubtask, SubtaskRuntime, SubtaskStatus, TaskPlan } from '../types';
+import { humanizePerspective } from '../utils/i18n';
 import { Markdown } from './Markdown';
 
 interface Props {
@@ -279,7 +280,7 @@ export function DebateGraph({ plan, runtime }: Props) {
                   } else if (p === 'con') {
                     bg = '#fee2e2'; fg = '#991b1b';
                   }
-                  const display = truncate(t.perspective, 18);
+                  const display = truncate(humanizePerspective(t.perspective), 18);
                   const w = Math.max(36, display.length * 6 + 8);
                   return (
                     <g transform={`translate(12, 52)`}>
@@ -363,7 +364,7 @@ export function DebateGraph({ plan, runtime }: Props) {
                 else if (p === 'con') cls = 'bg-red-100 text-red-700';
                 return (
                   <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold ${cls}`}>
-                    {selectedTask.perspective}
+                    {humanizePerspective(selectedTask.perspective)}
                   </span>
                 );
               })()}
@@ -388,7 +389,7 @@ export function DebateGraph({ plan, runtime }: Props) {
           {selectedRuntime?.output && (
             <details open className="mt-2">
               <summary className="text-[10px] text-gray-500 cursor-pointer hover:text-gray-700 font-medium">
-                Salida del worker
+                Salida del agente
               </summary>
               <div className="mt-2 text-gray-700 bg-gray-50 p-2 rounded border border-gray-100">
                 <Markdown>{selectedRuntime.output}</Markdown>

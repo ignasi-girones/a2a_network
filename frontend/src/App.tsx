@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { startDebateStream } from './api/sse';
 import { AgentPositionsChart } from './components/AgentPositionsChart';
 import { ConsensusGauge } from './components/ConsensusGauge';
@@ -14,6 +14,16 @@ import type {
   SubtaskRuntime,
   TaskPlan,
 } from './types';
+import { modelLabel } from './utils/modelLabel';
+
+interface ModelMap {
+  orchestrator?: string;
+  normalizer?: string;
+  ae1?: string;
+  ae2?: string;
+  ae3?: string;
+  feedback?: string;
+}
 
 interface ExtendedState extends DebateState {
   plan: TaskPlan | null;
@@ -85,7 +95,27 @@ function App() {
   });
 
   const [showTimeline, setShowTimeline] = useState(true);
+  const [models, setModels] = useState<ModelMap>({});
   const timelineRef = useRef<HTMLDivElement>(null);
+
+  // Load the per-agent LLM model the orchestrator was started with. Falls
+  // back to empty silently if the endpoint isn't reachable yet.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/models');
+        if (!res.ok) return;
+        const data = (await res.json()) as ModelMap;
+        if (!cancelled) setModels(data);
+      } catch {
+        // Quietly ignore — the badges will just show "—".
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const scrollToBottom = () => {
     if (timelineRef.current) {
@@ -256,12 +286,42 @@ function App() {
             </p>
           </div>
           <div className="flex flex-wrap gap-2 text-[10px]">
-            <span className="bg-blue-100 text-blue-700 px-2 py-1 rounded font-medium">AE1: Mistral</span>
-            <span className="bg-emerald-100 text-emerald-700 px-2 py-1 rounded font-medium">AE2: Cerebras</span>
-            <span className="bg-purple-100 text-purple-700 px-2 py-1 rounded font-medium">AE3: Groq · neutral</span>
-            <span className="bg-indigo-100 text-indigo-700 px-2 py-1 rounded font-medium">Orch: Groq</span>
-            <span className="bg-amber-100 text-amber-700 px-2 py-1 rounded font-medium">Normalizer: Gemini</span>
-            <span className="bg-gray-100 text-gray-700 px-2 py-1 rounded font-medium">Feedback: Ollama</span>
+            <span
+              className="bg-blue-100 text-blue-700 px-2 py-1 rounded font-medium"
+              title={models.ae1}
+            >
+              AE1: {modelLabel(models.ae1)}
+            </span>
+            <span
+              className="bg-emerald-100 text-emerald-700 px-2 py-1 rounded font-medium"
+              title={models.ae2}
+            >
+              AE2: {modelLabel(models.ae2)}
+            </span>
+            <span
+              className="bg-fuchsia-100 text-fuchsia-700 px-2 py-1 rounded font-medium"
+              title={models.ae3}
+            >
+              AE3: {modelLabel(models.ae3)}
+            </span>
+            <span
+              className="bg-indigo-100 text-indigo-700 px-2 py-1 rounded font-medium"
+              title={models.orchestrator}
+            >
+              Orquestador: {modelLabel(models.orchestrator)}
+            </span>
+            <span
+              className="bg-amber-100 text-amber-700 px-2 py-1 rounded font-medium"
+              title={models.normalizer}
+            >
+              Normalizador: {modelLabel(models.normalizer)}
+            </span>
+            <span
+              className="bg-gray-100 text-gray-700 px-2 py-1 rounded font-medium"
+              title={models.feedback}
+            >
+              Feedback: {modelLabel(models.feedback)}
+            </span>
           </div>
         </div>
       </header>
@@ -322,7 +382,7 @@ function App() {
               className="w-full flex items-center justify-between text-sm font-semibold text-gray-700 mb-2"
             >
               <span>
-                Log de eventos
+                Registro de eventos
                 {state.events.length > 0 && (
                   <span className="ml-2 text-[10px] font-normal text-gray-400">
                     {state.events.length} eventos

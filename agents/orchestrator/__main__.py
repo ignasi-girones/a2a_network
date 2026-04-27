@@ -8,6 +8,7 @@ from starlette.middleware.cors import CORSMiddleware
 
 from agents.orchestrator.agent_registry import registry_routes
 from agents.orchestrator.executor import OrchestratorExecutor
+from agents.orchestrator.models_routes import models_routes
 from agents.orchestrator.planner_routes import planner_routes
 from common.a2a_helpers import build_agent_card, build_skill
 from common.config import settings
@@ -67,6 +68,11 @@ def main():
     # frontend timeline and for inspecting the Planner output without
     # triggering the full debate flow.
     for route in planner_routes:
+        starlette_app.routes.insert(0, route)
+
+    # Mount /models route so the frontend can render the actual LLM each
+    # agent is configured to use (read from .env at startup).
+    for route in models_routes:
         starlette_app.routes.insert(0, route)
 
     # CORS for the frontend. Configurable via CORS_ORIGINS env var (comma-sep).

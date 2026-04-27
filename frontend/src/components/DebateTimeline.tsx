@@ -1,4 +1,5 @@
 import type { DebateEvent, TaskPlan } from '../types';
+import { humanizePerspective } from '../utils/i18n';
 import { Markdown } from './Markdown';
 
 interface Props {
@@ -11,7 +12,7 @@ function getEventStyle(event: DebateEvent) {
   const stage = event.stage;
   const agent = event.data?.agent;
   const workerId = event.data?.worker_id;
-  const perspective = event.data?.perspective;
+  const perspective = humanizePerspective(event.data?.perspective);
 
   // Agentic events carry worker_id (orchestrator → worker dispatch / done)
   if (workerId === 'ae1' || agent === 'ae1') {
@@ -59,7 +60,7 @@ function getEventStyle(event: DebateEvent) {
     return {
       align: 'self-center',
       bg: 'bg-violet-50 border-violet-200',
-      label: 'Tool',
+      label: 'Herramienta',
       labelColor: 'bg-violet-500',
     };
   }
@@ -111,7 +112,7 @@ function humanizeMessage(event: DebateEvent, plan: TaskPlan | null | undefined):
   if (!task) return raw;
   const worker = event.data?.worker_id;
   const skill = task.required_skill;
-  const persp = task.perspective ? `·${task.perspective}` : '';
+  const persp = task.perspective ? `·${humanizePerspective(task.perspective)}` : '';
   const tag = worker || skill;
 
   if (event.stage === 'subtask_dispatch') {
