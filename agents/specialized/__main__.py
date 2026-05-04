@@ -163,6 +163,10 @@ def main():
     for route in config_routes:
         starlette_app.routes.insert(0, route)
 
+    # Telemetry: Prometheus /metrics endpoint + HTTP middleware + MCP hooks.
+    from common.telemetry import install_telemetry
+    install_telemetry(starlette_app, agent_id)
+
     print(f"Specialized Agent ({agent_id.upper()}) starting on {url} with model {model}")
     uvicorn.run(starlette_app, host="0.0.0.0", port=port)
 

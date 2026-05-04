@@ -83,6 +83,10 @@ def main():
         allow_headers=["*"],
     )
 
+    # Telemetry: Prometheus /metrics endpoint + HTTP middleware + LLM hooks.
+    from common.telemetry import install_telemetry
+    install_telemetry(starlette_app, "orchestrator")
+
     print(f"Orchestrator Agent starting on {url}")
     uvicorn.run(starlette_app, host="0.0.0.0", port=port)
 

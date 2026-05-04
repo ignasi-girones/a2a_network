@@ -80,6 +80,10 @@ class Settings(BaseSettings):
     worker_port_pool_start: int = 9010
     worker_port_pool_size: int = 20
 
+    # Telemetry (Prometheus). When enabled, each agent exposes a /metrics
+    # endpoint and wraps LLM/MCP calls with timing instrumentation.
+    telemetry_enabled: bool = True
+
     # CORS origins for the frontend. Comma-separated list in env.
     # Defaults cover common local dev ports; set explicitly in production.
     cors_origins: str = "http://localhost:3000,http://localhost:5173"

@@ -85,6 +85,9 @@ def main():
 
     starlette_app = app.build(lifespan=lifespan)
 
+    from common.telemetry import install_telemetry
+    install_telemetry(starlette_app, "normalizer")
+
     print(f"Normalizer Agent starting on {url}")
     uvicorn.run(starlette_app, host="0.0.0.0", port=port)
 

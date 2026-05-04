@@ -1,0 +1,48 @@
+# docker-compose.monitoring.yml — Solo Prometheus + Grafana para desarrollo local.
+#
+# Uso:
+#   1. Arrancar agentes con start.bat (o start.bat --split)
+#   2. docker compose -f docker-compose.monitoring.yml up -d
+#
+# Prometheus scrapeará los agentes en el host Windows via host.docker.internal.
+# Grafana disponible en http://localhost:3000 (admin / admin).
+#
+# La IP del host Windows se lee de monitoring/.env (WINDOWS_HOST_IP).
+# Si cambia, actualízala:
+#   Get-NetIPAddress -InterfaceAlias "vEthernet (WSL*)" | select IPAddress
+#
+# Comando completo:
+#   docker compose --env-file monitoring/.env -f docker-compose.monitoring.yml up -d
+
+name: a2a-monitoring
+
+services:
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    volumes:
+      - ./monitoring/prometheus/prometheus.local.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    extra_hosts:
+      - "host.docker.internal:${WINDOWS_HOST_IP:-host-gateway}"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_PASSWORD:-admin}"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+volumes:
+  prometheus_data:
+  grafana_data:

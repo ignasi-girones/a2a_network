@@ -22,3 +22,6 @@ pydantic-settings>=2.0
 # ── SSE streaming ─────────────────────────────────────────────────────────────
 sse-starlette>=2.0
 packaging
+
+# ── Telemetría (Prometheus) ───────────────────────────────────────────────────
+prometheus-client>=0.21

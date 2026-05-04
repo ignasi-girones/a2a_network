@@ -1,0 +1,44 @@
+# Prometheus scrape configuration for the A2A debate network.
+# Each agent exposes /metrics on its existing port (no extra ports needed).
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: "a2a-orchestrator"
+    static_configs:
+      - targets: ["orchestrator:8080"]
+        labels:
+          agent_type: "orchestrator"
+
+  - job_name: "a2a-normalizer"
+    static_configs:
+      - targets: ["normalizer:8081"]
+        labels:
+          agent_type: "normalizer"
+
+  - job_name: "a2a-feedback"
+    static_configs:
+      - targets: ["feedback:8084"]
+        labels:
+          agent_type: "feedback"
+
+  - job_name: "a2a-role-workers"
+    static_configs:
+      - targets:
+          - "analyst:8082"
+          - "seeker:8083"
+          - "devils-advocate:8087"
+          - "synthesizer:8088"
+          - "empiricist:8089"
+          - "pragmatist:8090"
+        labels:
+          agent_type: "role_worker"
+
+  - job_name: "a2a-mcp-tools"
+    static_configs:
+      # MCP server exposes metrics on a sidecar port (FastMCP owns :8085).
+      - targets: ["mcp-tools:8185"]
+        labels:
+          agent_type: "mcp_tools"

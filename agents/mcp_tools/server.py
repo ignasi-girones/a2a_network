@@ -113,6 +113,17 @@ async def web_search(query: str) -> str:
 
 def main():
     """Run the MCP tools server."""
+    # Telemetry: FastMCP controls its own HTTP lifecycle, so we run a
+    # sidecar Prometheus metrics server on port 8185 in a background thread.
+    if settings.telemetry_enabled:
+        from prometheus_client import start_http_server
+        from common.telemetry.metrics import REGISTRY, AGENT_INFO, PROCESS_START
+        import time as _time
+        start_http_server(8185, registry=REGISTRY)
+        AGENT_INFO.labels(agent_id="mcp_tools").info({"version": "0.5.0"})
+        PROCESS_START.labels(agent_id="mcp_tools").set(_time.time())
+        print("MCP Tools metrics exposed on http://0.0.0.0:8185/metrics")
+
     print(f"MCP Tools Server starting on http://0.0.0.0:{settings.mcp_port}")
     mcp.run(transport="streamable-http")
 

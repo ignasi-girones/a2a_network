@@ -164,6 +164,7 @@ services:
       MCP_PORT: "8085"
     ports:
       - "8085:8085"
+      - "8185:8185"
     # MCP server is pure HTTP streaming; no /.well-known endpoint. Use a
     # plain TCP dial to confirm it's accepting connections.
     healthcheck:
@@ -190,6 +191,40 @@ services:
     networks:
       - a2a_net
 
+  # ── Monitoring ──────────────────────────────────────────────────────────────
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - a2a_net
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_PASSWORD:-admin}"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    depends_on:
+      - prometheus
+    networks:
+      - a2a_net
+    restart: unless-stopped
+
 networks:
   a2a_net:
     driver: bridge
+
+volumes:
+  prometheus_data:
+  grafana_data:

@@ -1,4 +1,5 @@
 import asyncio
+import contextvars
 import os
 from collections.abc import AsyncIterator
 
@@ -7,6 +8,12 @@ from litellm import acompletion, aembedding
 from litellm.exceptions import RateLimitError
 
 from common.config import settings
+
+# Exposes token usage from the last llm_complete call to the telemetry hook
+# without changing the function's return type (str).
+_last_usage: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    "_last_usage", default=None
+)
 
 # Configure LiteLLM with API keys from settings
 os.environ["GROQ_API_KEY"] = settings.groq_api_key
@@ -53,6 +60,11 @@ async def llm_complete(
     for attempt in range(3):
         try:
             response = await acompletion(**kwargs)
+            if hasattr(response, "usage") and response.usage:
+                _last_usage.set({
+                    "prompt_tokens": getattr(response.usage, "prompt_tokens", 0) or 0,
+                    "completion_tokens": getattr(response.usage, "completion_tokens", 0) or 0,
+                })
             return response.choices[0].message.content
         except RateLimitError:
             if attempt == 2:

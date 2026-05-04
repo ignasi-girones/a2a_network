@@ -18,6 +18,7 @@ from agents.orchestrator.agent_registry import registry
 from agents.orchestrator.agentic_orchestrator import AgenticOrchestrator
 from agents.orchestrator.plan_executor import ProgressCallback
 from agents.orchestrator.worker_spawner import get_spawner
+from common.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -63,11 +64,16 @@ class OrchestratorExecutor(AgentExecutor):
         logger.info("Orchestrator received: %s", user_input[:100])
 
         # Create progress callback that streams SSE events
-        progress = SSEProgressCallback(
+        progress: ProgressCallback = SSEProgressCallback(
             task_id=context.task_id,
             context_id=context.context_id,
             event_queue=event_queue,
         )
+        # Wrap with metrics if telemetry is enabled (decoupled — SSE still
+        # receives every event unchanged).
+        if settings.telemetry_enabled:
+            from common.telemetry.progress_metrics import MetricsProgressCallback
+            progress = MetricsProgressCallback(progress, agent_id="orchestrator")
 
         try:
             orchestrator = AgenticOrchestrator(
