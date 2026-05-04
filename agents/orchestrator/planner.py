@@ -35,8 +35,17 @@ You are the Planner of an agentic orchestrator. Your job is to decompose a
 user request into a DAG of sub-tasks that can be delegated to specialized
 worker agents.
 
-You will receive a catalog of available workers with their skills. Every
-`required_skill` in your plan MUST match an `id` from that catalog.
+You DO NOT have hardcoded knowledge of which skills exist. You receive a
+CATALOG of currently-registered workers and their skills, where each skill
+exposes:
+   - `id`     : the symbolic name you must copy verbatim into `required_skill`
+   - `name`   : human label
+   - `description` : the AUTHORITATIVE specification of WHEN to use this
+     skill, HOW to configure the subtask (what to put in `description` and
+     `perspective`), how many parallel instances make sense, what input it
+     expects, and what output it produces. READ EACH SKILL'S DESCRIPTION
+     CAREFULLY — it is the contract.
+   - `tags`   : extra hints (e.g. "first-step", "final-step", "deliberative").
 
 Return ONLY valid JSON with this exact shape:
 {
@@ -44,8 +53,9 @@ Return ONLY valid JSON with this exact shape:
   "subtasks": [
     {
       "id": "t1",
-      "description": "concrete instruction for the worker",
-      "required_skill": "<skill id from catalog>",
+      "description": "concrete instruction for the worker, following the
+                       conventions stated in that skill's description",
+      "required_skill": "<skill id copied verbatim from the catalog>",
       "depends_on": [],
       "perspective": null
     }
@@ -56,77 +66,57 @@ Return ONLY valid JSON with this exact shape:
 ═══════ GENERAL RULES ═══════
 - IDs are short strings ("t1", "t2", ...), unique within the plan.
 - `depends_on` lists earlier IDs whose output this subtask needs as context.
-- CRITICAL: `required_skill` MUST be copied VERBATIM from the catalog's skill
-  `id` field. Never invent, translate, or generalize a skill name. If the
-  catalog offers `normalize_input`, `debate`, `format_verdict` then those are
-  the ONLY valid values. Skills like `research`, `analysis`, `summarize`,
-  `search`, etc. DO NOT EXIST unless they appear in the catalog — using them
-  will cause the plan to fail immediately.
-- Keep descriptions concrete and actionable — a worker should be able to act
-  on the `description` alone (plus the outputs of its `depends_on`).
+- `required_skill` MUST be one of the `id` values present in the catalog
+  you receive. Do not invent skill names. If a skill you would like (e.g.
+  "research", "summarise") is not in the catalog, plan around it using only
+  the skills that ARE in the catalog.
+- Keep `description` concrete and actionable. Follow whatever conventions
+  the matching skill's description prescribes (input format, perspective
+  format, required sections, etc.).
+- `perspective` is OPTIONAL metadata that some skills use for routing or
+  per-agent identity. Use it only when the relevant skill's description
+  asks for it.
 
-═══════ PATTERN: deliberative questions (opinions, decisions, comparisons) ═══════
-When the user asks something with multiple defensible answers (should we, which
-is better, is X right, etc.), generate a MINIMAL OPENING PLAN. The orchestrator
-runs a separate consensus loop that evaluates the agents' positions after each
-exchange and asks you for SYNTHESIS EXTENSIONS only if convergence has not
-been reached. This means:
-  - You do NOT plan multiple rounds up front.
-  - You do NOT include a `format_verdict` step. The orchestrator synthesizes
-    the final answer itself from the latest positions of all three agents once
-    the consensus loop ends (either by convergence or by hitting the round cap).
+═══════ HOW TO BUILD A PLAN ═══════
+1. Read the user's request and identify what kind of answer it needs:
+   factual lookup? opinion / decision / comparison? multi-step analysis?
+2. Walk the catalog. For each skill, decide whether its description says
+   it applies to this kind of request. Tags like "first-step" /
+   "final-step" / "deliberative" are good early signals.
+3. Compose a DAG that satisfies the user's request using only the skills
+   you selected. Respect the input/output contracts each skill states in
+   its description.
+4. If a skill's description says "schedule N copies in parallel with
+   contrasting perspectives" or similar, do that. If it says "use as a
+   first step on free-text input", put it before any subtask that
+   benefits from structured context. If it says "use as the final step",
+   make it the sink (no successors).
+5. If two or more skills could plausibly do the same job, prefer the one
+   whose description matches your user's intent most specifically.
 
-Required structure (exactly 4 subtasks):
-1. ONE `normalize_input` subtask first (no deps).
-2. THREE parallel `debate` subtasks for INITIAL OPINIONS (deps: [t1]):
-   - AE1: an advocate for one side ("ae1: <role + stance>")
-   - AE2: an advocate for the opposing side ("ae2: <opposing role + stance>")
-   - AE3: an INDEPENDENT EVALUATOR who does NOT have a stance assigned
-     ("ae3: Independent evaluator").
-   The first two roles MUST be CONTRASTING (e.g. DevOps Engineer vs Team
-   Lead). AE3 is NOT a mediator looking for a middle ground — AE3 is an
-   evidence-driven evaluator who will side with whichever position has the
-   strongest arguments, even if that means fully endorsing AE1 or AE2.
+═══════ MINIMAL-PLAN PRINCIPLE ═══════
+Emit only the first batch of subtasks needed. The orchestrator may run
+further loops (e.g. multi-round deliberation, consensus extension,
+final-formatting steps) on top of your plan. Do not pre-plan rounds
+yourself unless the relevant skill's description explicitly tells you to.
 
-For each `debate` subtask, the `description` MUST include:
-   - "ROLE: <the role>"
-   - "PERSPECTIVE: <stance for AE1/AE2; 'independent evaluator, sides with the
-      strongest arguments' for AE3>"
-   - "ROUND: opening"
-   - "GOAL: <for AE1/AE2> argue your initial position with the strongest
-      evidence you can muster, but stay genuinely open to changing your mind
-      if the opposing side presents stronger evidence.
-      <for AE3> read both opening positions when they arrive (this is the
-      opening round so write your initial assessment of the tradeoffs).
-      Do NOT default to splitting the difference — if you already see one
-      side as more grounded, say so."
-   - "Format: AGREEMENTS: ... / REFINEMENT: ..."
-
-CRITICAL — `perspective` field convention for debate subtasks:
-   - Initial opinion AE1: "ae1: <role>, <stance>"
-   - Initial opinion AE2: "ae2: <role>, <stance>"
-   - Initial opinion AE3: "ae3: Independent evaluator"
-   The "ae1:" / "ae2:" / "ae3:" prefix is MANDATORY — the executor uses it to
-   label each agent's own prior arguments vs the others' when assembling
-   context, and the consensus loop uses it to identify each agent's latest
-   position.
-
-═══════ PATTERN: factual / single-answer questions ═══════
-If the request has one obvious answer (definitions, calculations, lookups),
-do NOT use the debate pattern. Use a short pipeline: normalize → one or two
-analytic steps → format_verdict. No rounds.
-
-═══════ EXAMPLE: deliberative opening plan (4 subtasks) ═══════
+═══════ EXAMPLE — using a hypothetical 3-skill catalog ═══════
+Suppose the catalog contains skills with ids "preprocess", "expert_panel"
+(deliberative, multi-agent), and "report" (final-step). For a deliberative
+user prompt you might emit something like:
 {
-  "goal": "Compare remote vs in-person work for software teams",
+  "goal": "Decide whether the team should adopt monorepos",
   "subtasks": [
-    {"id":"t1","description":"Normalize the request into structured JSON","required_skill":"normalize_input","depends_on":[],"perspective":null},
-    {"id":"t2","description":"ROLE: DevOps Engineer. PERSPECTIVE: Remote work boosts productivity. ROUND: opening. GOAL: state your initial position clearly so the others can respond to it — but stay open to revising it in later rounds. Format: AGREEMENTS: / REFINEMENT:","required_skill":"debate","depends_on":["t1"],"perspective":"ae1: DevOps Engineer, pro-remote"},
-    {"id":"t3","description":"ROLE: Team Lead. PERSPECTIVE: In-person work strengthens cohesion. ROUND: opening. GOAL: state your initial position clearly so the others can respond to it — but stay open to revising it in later rounds. Format: AGREEMENTS: / REFINEMENT:","required_skill":"debate","depends_on":["t1"],"perspective":"ae2: Team Lead, pro-onsite"},
-    {"id":"t4","description":"ROLE: Independent evaluator. PERSPECTIVE: no assigned stance — sides with the strongest arguments. ROUND: opening. GOAL: write your initial assessment of the tradeoffs based on what you currently know about the topic. Do NOT default to splitting the difference; if one position is already more clearly grounded in evidence, say so. Format: AGREEMENTS: / REFINEMENT:","required_skill":"debate","depends_on":["t1"],"perspective":"ae3: Independent evaluator"}
+    {"id":"t1","description":"<follow preprocess's description for input shape>","required_skill":"preprocess","depends_on":[],"perspective":null},
+    {"id":"t2","description":"<follow expert_panel's instructions, including its perspective format>","required_skill":"expert_panel","depends_on":["t1"],"perspective":"<as that skill prescribes>"},
+    {"id":"t3","description":"<follow expert_panel's instructions for the contrasting role>","required_skill":"expert_panel","depends_on":["t1"],"perspective":"<contrasting>"}
   ],
-  "max_workers": 3
+  "max_workers": 2
 }
+The exact ids ("preprocess", "expert_panel") are illustrative — use what
+the live catalog actually offers and obey what each skill's description
+says about parallelism, perspective format, deps, and final-step
+behaviour.
 """
 
 
@@ -138,23 +128,32 @@ as before. You may drop or rewrite the failed subtask, or route around it.
 
 
 EXTEND_FOR_CONSENSUS_SYSTEM_PROMPT = """\
-A debate has just finished its latest exchange and the THREE agents (ae1, ae2,
-ae3) have NOT yet reached consensus. You must produce ONE more synthesis round
-as a SMALL EXTENSION PLAN — exactly THREE additional `debate` subtasks (one
-per agent) that continue from the latest positions and push toward convergence.
+A multi-agent deliberation has just finished its latest exchange and the
+participating agents have NOT yet reached consensus. You must produce ONE
+more re-evaluation round as a SMALL EXTENSION PLAN — one new subtask per
+participating agent that continues from each agent's latest position and
+pushes toward an evidence-driven convergence.
+
+You will be told:
+  - the IDs of each agent's most recent contribution (one per agent),
+  - the consensus reason explaining why convergence has not yet happened,
+  - the worker catalog (so you can pick the right `required_skill`).
 
 Return ONLY valid JSON with EXACTLY this shape (all top-level fields required):
 {
   "goal": "<restate the original deliberation goal>",
-  "subtasks": [ ...three debate subtasks... ],
-  "max_workers": 3
+  "subtasks": [ ...one new debate-style subtask per agent... ],
+  "max_workers": <number of agents>
 }
 
 Rules:
 - IDs must NOT collide with existing IDs. Use prefix "x" (e.g. x1, x2, x3).
-- Produce EXACTLY THREE subtasks, all `required_skill = "debate"`. No
-  `normalize_input`, no `format_verdict` — the orchestrator handles the final
-  synthesis itself once consensus is reached or the round budget is exhausted.
+- Produce exactly one new subtask per participating agent, all using the
+  same deliberative skill the original plan used. Pick that skill from the
+  catalog by reading its description (it should be the one whose
+  description marks it as deliberative / multi-agent). Do NOT include any
+  preprocessing or final-formatting subtasks here — the orchestrator
+  handles those itself.
 - All three subtasks MUST be HONEST RE-EVALUATION rounds. Convergence is the
   goal, but FORCED CENTRISM IS NOT. The instructions you write must:
   1. Tell each agent to genuinely re-weigh both sides on the merits of the
@@ -218,26 +217,48 @@ def _format_worker_catalog(workers: list[dict[str, Any]]) -> str:
     """Render the available-workers catalog for the planner prompt.
 
     `workers` is a list of dicts with keys {agent_id, url, skills} where each
-    skill is {id, name, description, tags}. We keep this compact because it
-    goes into every planning call.
+    skill is {id, name, description, tags}. We INCLUDE `description` because
+    it is the authoritative spec of how each skill should be used — the
+    planner reasons from it instead of from any hardcoded skill knowledge.
     """
     if not workers:
         return "(no workers currently registered)"
 
-    lines = []
+    # Group by skill id so the planner sees one entry per capability and the
+    # set of workers that can perform it. This keeps the prompt compact and
+    # avoids re-printing the same description once per worker.
+    skills_by_id: dict[str, dict[str, Any]] = {}
     for w in workers:
-        skills = w.get("skills") or []
-        if not skills:
-            lines.append(f"- agent_id={w.get('agent_id')}: (no skills advertised)")
-            continue
-        skill_lines = [
-            f"    • id={s.get('id')!r} name={s.get('name')!r} "
-            f"tags={s.get('tags') or []}"
-            for s in skills
-        ]
-        lines.append(
-            f"- agent_id={w.get('agent_id')}:\n" + "\n".join(skill_lines)
-        )
+        for s in (w.get("skills") or []):
+            sid = s.get("id")
+            if not sid:
+                continue
+            if sid not in skills_by_id:
+                skills_by_id[sid] = {
+                    "id": sid,
+                    "name": s.get("name") or sid,
+                    "description": s.get("description") or "(no description provided)",
+                    "tags": s.get("tags") or [],
+                    "workers": [],
+                }
+            skills_by_id[sid]["workers"].append(w.get("agent_id"))
+
+    if not skills_by_id:
+        return "(no skills advertised by any registered worker)"
+
+    lines = ["AVAILABLE SKILLS (read each `description` carefully):", ""]
+    for sid, s in skills_by_id.items():
+        lines.append(f"- id: {sid!r}")
+        lines.append(f"  name: {s['name']}")
+        lines.append(f"  tags: {s['tags']}")
+        lines.append(f"  workers: {s['workers']}  (agent_ids that can perform this skill)")
+        # Indent the description so it's clearly visually grouped under the
+        # skill it belongs to.
+        desc_lines = [ln for ln in s["description"].splitlines() if ln.strip()]
+        lines.append("  description: |")
+        for ln in desc_lines:
+            lines.append(f"    {ln}")
+        lines.append("")
     return "\n".join(lines)
 
 
@@ -431,7 +452,7 @@ class Planner:
         workers: list[dict[str, Any]],
         consensus_reason: str,
     ) -> TaskPlan:
-        """Produce a small extension plan to push two agents toward consensus.
+        """Produce a small extension plan to push the agents toward consensus.
 
         The extension is a fresh DAG that the orchestrator will execute on top
         of the original plan's results. Subtask IDs in the extension must not

@@ -65,6 +65,17 @@ function getEventStyle(event: DebateEvent) {
     };
   }
 
+  if (stage === 'embedding' || stage === 'embedding_done' || stage === 'embedding_failed') {
+    return {
+      align: 'self-center',
+      bg: stage === 'embedding_failed'
+        ? 'bg-rose-50 border-rose-200'
+        : 'bg-cyan-50 border-cyan-200',
+      label: 'Embeddings',
+      labelColor: stage === 'embedding_failed' ? 'bg-rose-600' : 'bg-cyan-600',
+    };
+  }
+
   if (stage === 'agent_positions') {
     return {
       align: 'self-center',

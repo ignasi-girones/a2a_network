@@ -1,240 +1,197 @@
 # Agentes del sistema
 
-La red consta de 5 agentes A2A y un servidor MCP de herramientas. Cada agente es un servidor HTTP independiente que expone una **Agent Card** (descriptor de capacidades) y procesa mensajes mediante el protocolo JSON-RPC definido por A2A v1.0.0.
+La red consta de **6 agentes A2A** y un servidor MCP de herramientas. Cada agente es un servidor HTTP independiente que publica una **Agent Card** en `/.well-known/agent-card.json` y procesa mensajes vía JSON-RPC tal como define A2A v1.0.0.
+
+El orquestador NO conoce de antemano qué agentes existen. Cada worker se auto-registra al arrancar (POST `/registry/register`) y publica un **catálogo de skills auto-descritas** — la `description` de cada skill es la fuente de verdad sobre cuándo y cómo usarla. Un planner LLM razona sobre ese catálogo para decidir el plan.
 
 ---
 
-## Orchestrator (Puerto 9000)
+## Orchestrator (Puerto 8080)
 
-**Modelo:** Groq / Llama 3.3 70B Versatile
+**Modelo (default):** `groq/llama-3.3-70b-versatile`
 **Agent Card:** Estática
-**Rol:** Coordinador central del flujo de debate.
+**Rol:** Coordinador agéntico de la deliberación.
 
-Es el **único agente agentic** del sistema — tiene capacidad de toma de decisiones autónoma respaldada por un LLM. El resto de agentes son reactivos (ejecutan una tarea concreta cuando reciben un mensaje).
+Es el único agente con capacidad de **decisión autónoma**: el resto son workers reactivos que ejecutan su skill cuando reciben un A2A SendMessage.
 
-### Responsabilidades
+### Componentes internos
 
-1. Recibir el prompt del usuario desde el frontend via `SendStreamingMessage`
-2. Delegar la normalización al agente Normalizer via A2A
-3. Decidir roles y perspectivas para AE1 y AE2 usando su propio LLM
-4. Configurar dinámicamente los agentes especializados via API interna
-5. Recoger opiniones iniciales en paralelo (A2A a AE1 y AE2)
-6. Gestionar las rondas de debate (máximo configurable)
-7. Evaluar consenso tras cada ronda
-8. Generar un resumen y enviarlo al agente Feedback
-9. Emitir eventos SSE de progreso al frontend durante todo el proceso
-
-### Flujo de comunicación
-
-```
-Frontend ──SSE──> Orchestrator ──A2A──> Normalizer
-                      │
-                      ├──A2A──> AE1 (opinión / debate)
-                      ├──A2A──> AE2 (opinión / debate)
-                      │
-                      └──A2A──> Feedback (resumen → veredicto)
-```
+| Módulo | Responsabilidad |
+|---|---|
+| `agent_registry.py` | Mapa thread-safe `agent_id → WorkerEntry`. Endpoints `/registry/register`, `/registry/agents`, `/registry/by-skill/{id}`. |
+| `planner.py` | Llamadas LLM que producen un `TaskPlan` (DAG). Función `create_plan` para apertura, `extend_for_consensus` para extensiones de ronda. |
+| `plan_executor.py` | Recorre el DAG, hace `_assign_workers` (pinning por `perspective` + round-robin) y dispatcha cada subtarea vía A2A. |
+| `worker_spawner.py` | Lanza workers extra como subprocess si el plan demanda más concurrencia que la registrada. Pool de puertos `9010+`. |
+| `agentic_orchestrator.py` | El director. Implementa `run()`, `_consensus_loop()`, `_finalize_with_feedback()`, `_synthesize()`. |
+| `models_routes.py` | `GET /models` — devuelve el modelo configurado por agente, leído de `settings`. |
+| `executor.py` | El `OrchestratorExecutor` A2A: recibe el prompt del usuario y arranca `AgenticOrchestrator.run()`, emitiendo eventos SSE. |
+| `flow_manager.py` | **Legacy**, no se usa en el path agéntico actual. |
 
 ### Llamadas LLM internas (no A2A)
 
-El orquestador usa su LLM directamente (sin pasar por A2A) para:
+El orquestador hace 3 tipos de llamadas LLM directas:
 
-- **Decisión de roles:** Analiza el tema normalizado y asigna roles contrastantes a AE1/AE2 (ej: "DevOps Engineer" vs "Team Lead")
-- **Evaluación de consenso:** Tras cada ronda, evalúa si las posiciones convergen
-- **Generación de resumen:** Sintetiza el debate completo antes de enviarlo a Feedback
+1. **Plan creation** — recibe el prompt + catálogo y emite el DAG inicial.
+2. **Consensus check** — tras cada exchange evalúa convergencia, devolviendo `agreement_score`, posiciones por agente, `shared_points` y `remaining_disagreements`. El score se *capa* en código si la dispersión de posiciones lo contradice (defensa contra incoherencias del LLM).
+3. **Plan extension** — si no hay consenso y queda presupuesto, pide al planner una mini-extensión: una nueva ronda paralela (una subtask por agente).
 
-### Streaming SSE
+### SSE streaming
 
-El orquestador emite `TaskStatusUpdateEvent` con metadata JSON en cada hito del debate. El frontend recibe estos eventos en tiempo real para mostrar el timeline.
+El orquestador emite `TaskStatusUpdateEvent` con metadata JSON. El frontend acumula estos eventos:
 
-```json
-{
-  "stage": "ae1_argues",
-  "message": "Ronda 1: AE1 responde",
-  "data": {"agent": "ae1", "round": 1, "text": "...argumento..."}
-}
-```
-
-### Archivos
-
-| Archivo | Descripción |
-|---------|-------------|
-| `agents/orchestrator/__main__.py` | Servidor A2A con CORS para frontend |
-| `agents/orchestrator/executor.py` | `OrchestratorExecutor` + `SSEProgressCallback` |
-| `agents/orchestrator/flow_manager.py` | `FlowManager` — lógica completa del debate |
+| `stage` | Cuándo se emite |
+|---|---|
+| `discover` / `plan` / `plan_ready` | Antes / durante / después de generar el DAG |
+| `plan_start` / `plan_batch` | El executor arranca un batch ready |
+| `subtask_dispatch` / `subtask_done` / `subtask_failed` | Por cada subtarea |
+| `tool_use` | Worker invoca un tool MCP (relayed por el executor) |
+| `agent_positions` | Tras cada exchange, scores 0..1 por agente |
+| `consensus_check` / `consensus` / `no_consensus` | Resultado del LLM evaluador |
+| `extend_plan` / `extend_failed` | Apertura/fallo de una extensión |
+| `synthesize` / `complete` | Cierre del flow |
 
 ---
 
-## Normalizer (Puerto 9001)
+## Normalizer (Puerto 8081)
 
-**Modelo:** Google Gemini 2.5 Flash
-**Agent Card:** Estática
-**Rol:** Transformar input libre del usuario en JSON estructurado.
+**Modelo (default):** `gemini/gemini-2.5-flash`
+**Skill:** `normalize_input`
+**Rol:** Transforma el texto plano del usuario en JSON estructurado.
 
-### Entrada / Salida
+### Skill auto-descrito
 
-**Entrada:** Texto libre del usuario (ej: *"¿Es mejor invertir en acciones o bonos?"*)
+La `description` que el normalizer publica le dice al planner *cuándo* y *cómo* usarlo:
 
-**Salida:** JSON normalizado:
+> *"Converts a raw free-text user prompt into a structured JSON object with topic, domain, question type, constraints, and suggested perspectives. Use as the FIRST step of any plan whose user input arrives as raw natural language."*
+
+### Output
 
 ```json
 {
-  "topic": "Comparación entre inversión en acciones y bonos",
-  "domain": "finance",
-  "question_type": "comparison",
+  "topic": "...",
+  "domain": "finance | tech | hr | ...",
+  "question_type": "opinion | decision | comparison | analysis",
   "constraints": [],
-  "suggested_perspectives": [
-    "Las acciones ofrecen mayor rentabilidad a largo plazo...",
-    "Los bonos proporcionan estabilidad y menor riesgo..."
-  ]
+  "suggested_perspectives": ["...", "..."]
 }
 ```
 
 ### Tolerancia a fallos
 
-- 2 reintentos si el LLM no devuelve JSON válido
-- Fallback a estructura mínima: `{"topic": "<input original>", "domain": "general", ...}`
+- 2 reintentos con corrective message si el LLM no devuelve JSON válido.
+- Fallback a una estructura mínima si los reintentos fallan o si el provider falla por completo (timeout/rate limit). El subtask se completa con datos sensatos en lugar de tirar todo el debate.
 
 ### Archivos
 
-| Archivo | Descripción |
-|---------|-------------|
-| `agents/normalizer/__main__.py` | Servidor A2A en puerto 9001 |
-| `agents/normalizer/executor.py` | `NormalizerExecutor` con prompt de extracción JSON |
+- `agents/normalizer/__main__.py` — servidor A2A + auto-registro.
+- `agents/normalizer/executor.py` — `NormalizerExecutor` con prompt JSON-mode.
 
 ---
 
-## Specialized Agents — AE1 y AE2 (Puertos 9002, 9003)
+## Specialized Agents — AE1, AE2, AE3 (Puertos 8082, 8083, 8087)
 
-**Modelos:** Mistral Large (AE1) / Cerebras Qwen 3 235B (AE2)
-**Agent Card:** Dinámica (cambia según rol asignado)
-**Rol:** Debatir desde perspectivas opuestas asignadas por el orquestador.
+**Modelos (default):** Mistral / Cerebras / Groq (configurables vía `AE1_MODEL`, `AE2_MODEL`, `AE3_MODEL` en `.env`).
+**Skill:** `debate` (los 3 publican el mismo skill).
+**Rol:** Participan en deliberaciones multi-agente con identidades persistentes a través de las rondas.
 
-### Agent Cards dinámicas
+### Roles típicos
 
-Son los únicos agentes con **agent cards dinámicas** en el sistema. Usan el callback `card_modifier` nativo del SDK A2A:
+- **AE1** — abre advocando una postura.
+- **AE2** — abre advocando la postura opuesta.
+- **AE3** — *evaluador independiente*: no tiene postura asignada, pondera evidencias y se decanta hacia el lado mejor fundamentado (incluso endorsando totalmente AE1 o AE2 si la evidencia lo justifica). NO es un mediador centrista.
 
-```python
-async def card_modifier(card: AgentCard) -> AgentCard:
-    role = await state.get_role()
-    card.name = f"Specialized Agent (AE1) - {role}"
-    card.description = f"Agent configured as: {role}"
-    card.skills = [...]  # Skills generadas por el LLM del orquestador
-    return card
-```
+### Convención de `perspective` (clave del enrutado)
 
-Antes de la configuración, la card dice *"Awaiting role assignment"*. Después del `/internal/configure`, refleja el rol asignado (ej: *"Financial Analyst — conservative, risk-averse"*).
+El planner asigna `perspective` con el formato `"<agent_id>: <role + stance>"`. El executor extrae el `agent_id` y **pina** la subtask al worker correspondiente. Esto garantiza que la trayectoria de cada agente queda en el mismo proveedor LLM ronda tras ronda. Ejemplos:
 
-### API interna de configuración
+- `"ae1: DevOps Engineer, pro-remote"` → pinned a worker `ae1`
+- `"ae3: Independent evaluator"` → pinned a worker `ae3`
+- `"ae1: synthesis 1"` (rondas posteriores) → sigue pinned a `ae1`
 
-Endpoint **fuera del protocolo A2A** para inyectar el rol dinámicamente:
+### System prompt (en `agent_state.py`)
 
-| Endpoint | Método | Descripción |
-|----------|--------|-------------|
-| `/internal/configure` | POST | Asigna rol, perspectiva y skills |
-| `/internal/state` | GET | Consulta estado actual del agente |
+`DEFAULT_SYSTEM_PROMPT` es un prompt universal compartido entre AE1/AE2/AE3 que:
 
-**Payload de configuración:**
+- Explica las identidades (ae1, ae2, ae3) y que ae3 es evaluador independiente.
+- Anima explícitamente a **cambiar de bando** si la otra parte tiene mejores argumentos.
+- Penaliza el centrismo forzado ("both have a point" sin compromiso).
+- Pide formato `AGREEMENTS:` / `REFINEMENT:` en cada respuesta.
 
-```json
-{
-  "role": "Financial Analyst",
-  "perspective": "Conservative, prioritizes risk management over growth",
-  "skills": [
-    {"id": "risk_assessment", "name": "Risk Assessment"},
-    {"id": "market_analysis", "name": "Market Analysis"}
-  ]
-}
-```
+El rol específico de cada subtask llega en la `description` (ROLE, ROUND, GOAL, etc.) — el system prompt no necesita reconfigurarse, lo que hace que `/internal/configure` sea innecesario en el path agéntico.
 
-### System prompt
+### Web search vía MCP
 
-El system prompt se construye automáticamente a partir del rol y perspectiva:
-
-> *"You are a Financial Analyst participating in a structured debate. Your perspective: Conservative, prioritizes risk management over growth. Make clear, well-reasoned arguments. Be concise (3-5 paragraphs max). Engage directly with the opposing argument when responding."*
-
-### Estado mutable
-
-`AgentState` protege el estado con `asyncio.Lock` para seguridad en concurrencia:
-
-```python
-class AgentState:
-    role: str          # Rol asignado (ej: "DevOps Engineer")
-    perspective: str   # Perspectiva del debate
-    skills: list       # Skills dinámicas
-    system_prompt: str # Prompt construido automáticamente
-    ready: bool        # True tras configuración
-```
+Cada agente puede invocar `web_search` en el MCP server tras formular su argumento inicial, integrando evidencia para refinarlo. La extracción de la query es defensiva: salta los headings (`AGREEMENTS:`, `REFINEMENT:`) para no buscar la propia etiqueta de sección.
 
 ### Archivos
 
-| Archivo | Descripción |
-|---------|-------------|
-| `agents/specialized/__main__.py` | Servidor A2A con `card_modifier` y rutas internas |
-| `agents/specialized/executor.py` | `SpecializedExecutor` — lee prompt de AgentState |
-| `agents/specialized/agent_state.py` | Estado mutable thread-safe |
-| `agents/specialized/config_api.py` | API REST interna (`/internal/configure`) |
+- `agents/specialized/__main__.py` — servidor A2A; selecciona el modelo según `agent_id` desde `settings`.
+- `agents/specialized/executor.py` — `SpecializedExecutor`: argumenta → busca web → refina → emite Task con metadata MCP.
+- `agents/specialized/agent_state.py` — `AgentState` thread-safe con el system prompt deliberativo.
+- `agents/specialized/config_api.py` — endpoints `/internal/configure` y `/internal/state`. Existen pero **no se usan en el path agéntico** (el planner pasa los roles por `description`).
 
 ---
 
-## Feedback (Puerto 9004)
+## Feedback (Puerto 8084)
 
-**Modelo:** Ollama / Qwen 2.5 14B (local) con fallback a Groq
-**Agent Card:** Estática
-**Rol:** Generar un informe final legible para humanos.
+**Modelo (default):** `ollama/qwen2.5:14b` con fallback automático a Groq
+**Skill:** `format_verdict`
+**Rol:** Genera el informe final legible en castellano.
 
-### Formato del informe
+### Skill auto-descrito
 
-El agente recibe el `FlowResult` completo (JSON con todo el debate) y produce un informe Markdown con:
+> *"Produces the final human-readable report of a deliberation. Output is structured Markdown in Spanish. Use as the LAST step of any plan that needs a polished user-facing answer."*
 
-1. **Resumen ejecutivo** (2-3 frases)
-2. **Participantes** (roles y perspectivas de cada agente)
-3. **Argumentos clave** (los más fuertes de cada lado)
-4. **Puntos de acuerdo**
-5. **Puntos de desacuerdo**
-6. **Veredicto final** (conclusión equilibrada)
-7. **Nivel de confianza** (Alto / Medio / Bajo)
+### Estructura del informe
+
+1. **Resumen ejecutivo** (2-3 frases).
+2. **Participantes** (rol y perspectiva de los 3 agentes, identificando AE3 como mediador-evaluador independiente).
+3. **Argumentos clave** por agente.
+4. **Puntos de acuerdo**.
+5. **Puntos de desacuerdo**.
+6. **Veredicto final**.
+7. **Estado del debate** — etiqueta clara: **Consenso alcanzado**, **Consenso parcial**, o **Sin consenso** (no es un "nivel de confianza" — es un análisis explícito de si hubo acuerdo real).
 
 ### Tolerancia a fallos
 
-Si Ollama no está disponible o falla, el agente automáticamente usa Groq como proveedor de respaldo:
-
-```python
-except Exception:
-    # Fallback to orchestrator model (Groq)
-    result = await llm_complete(model=settings.orchestrator_model, ...)
-```
+Si Ollama no responde (typically: container down, modelo sin descargar), el agente reintenta con el modelo del orquestador (Groq) automáticamente. Si ambos fallan, el orquestador cae al synth multi-sink interno (`SYNTHESIZE_PROMPT`).
 
 ### Archivos
 
-| Archivo | Descripción |
-|---------|-------------|
-| `agents/feedback/__main__.py` | Servidor A2A en puerto 9004 |
-| `agents/feedback/executor.py` | `FeedbackExecutor` con prompt de formateo |
+- `agents/feedback/__main__.py` — servidor A2A.
+- `agents/feedback/executor.py` — `FeedbackExecutor` con fallback Ollama → Groq.
 
 ---
 
-## MCP Tools Server (Puerto 8100)
+## MCP Tools Server (Puerto 8085)
 
-**Protocolo:** Model Context Protocol (MCP) via `streamable-http`
-**Rol:** Proveer herramientas estáticas accesibles por los agentes.
+**Protocolo:** Model Context Protocol via `streamable-http`
+**Rol:** Tools accesibles por los specialized agents.
 
-### Herramientas disponibles
+### Tools
 
 | Tool | Descripción | Ejemplo |
-|------|-------------|---------|
-| `calculator` | Evaluación segura de expresiones matemáticas | `calculator("sqrt(144) + 2**3")` → `20.0` |
-| `web_search` | Búsqueda web via API de DuckDuckGo | `web_search("GDP Spain 2025")` → resultados |
+|---|---|---|
+| `calculator` | Eval seguro de expresiones matemáticas | `calculator("sqrt(144) + 2**3")` → `20.0` |
+| `web_search` | Búsqueda DuckDuckGo | `web_search("GDP Spain 2025")` |
 
-### Seguridad
+### Seguridad de `calculator`
 
-La herramienta `calculator` implementa sanitización de input:
-- Solo permite: dígitos, operadores, paréntesis, funciones matemáticas
-- Bloquea: `import`, `__`, `exec`, `eval`, `open`
-- Funciones permitidas: `sqrt`, `abs`, `round`, `min`, `max`, `log`, `pow`, `sin`, `cos`, `tan`, `pi`, `e`
+- Sólo permite dígitos, operadores, paréntesis y un set blanco de funciones (`sqrt`, `abs`, `round`, `min`, `max`, `log`, `pow`, `sin`, `cos`, `tan`, `pi`, `e`).
+- Bloquea `import`, `__`, `exec`, `eval`, `open`.
 
 ### Archivos
 
-| Archivo | Descripción |
-|---------|-------------|
-| `agents/mcp_tools/server.py` | Servidor FastMCP con 2 tools |
+- `agents/mcp_tools/server.py` — FastMCP server con los 2 tools.
+
+---
+
+## Cómo añadir un agente nuevo
+
+1. Crea `agents/<nombre>/__main__.py` siguiendo el patrón de `normalizer` o `feedback`.
+2. Define un `build_skill(...)` con una **`description` rica** que diga al planner: *cuándo usarlo*, *qué input espera*, *qué output produce*, y cualquier convención (input format, parallelism, etc.).
+3. El proceso se auto-registra en el `AgentRegistry` al arrancar — no toca código del orquestador.
+4. Añade el servicio a `docker-compose.yml` y al `start_all.sh`.
+5. Si el modelo es configurable, añade el campo en `common/config.py` (`<agent>_model`) y exponlo en `.env.example`.
+
+El planner verá el nuevo skill en el catálogo y razonará si usarlo basándose en la `description`.

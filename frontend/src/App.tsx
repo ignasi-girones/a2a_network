@@ -23,6 +23,7 @@ interface ModelMap {
   ae2?: string;
   ae3?: string;
   feedback?: string;
+  embedding?: string;
 }
 
 interface ExtendedState extends DebateState {
@@ -205,6 +206,9 @@ function App() {
               positions: event.data.positions,
               shared_points: event.data.shared_points ?? [],
               remaining_disagreements: event.data.remaining_disagreements ?? [],
+              components: event.data.components,
+              movement: event.data.movement,
+              concessions: event.data.concessions,
             };
             const without = prev.consensusHistory.filter(
               (s) => s.round !== snap.round,
@@ -216,9 +220,9 @@ function App() {
             event.stage === 'consensus_check' &&
             typeof event.data?.agreement_score === 'number'
           ) {
-            // consensus_check carries the LLM's `reason`. Merge it into the
-            // matching round's snapshot if one already exists, otherwise
-            // create a fresh entry.
+            // consensus_check carries the auto-generated `reason` with the
+            // metric breakdown. Merge it into the matching round's snapshot
+            // if one already exists, otherwise create a fresh entry.
             const round =
               typeof event.data.round === 'number'
                 ? event.data.round
@@ -235,6 +239,9 @@ function App() {
                 event.data.remaining_disagreements ??
                 existing?.remaining_disagreements ??
                 [],
+              components: event.data.components ?? existing?.components,
+              movement: existing?.movement,
+              concessions: existing?.concessions,
             };
             const without = prev.consensusHistory.filter(
               (s) => s.round !== round,
@@ -321,6 +328,12 @@ function App() {
               title={models.feedback}
             >
               Feedback: {modelLabel(models.feedback)}
+            </span>
+            <span
+              className="bg-cyan-100 text-cyan-700 px-2 py-1 rounded font-medium"
+              title={models.embedding}
+            >
+              Embeddings: {modelLabel(models.embedding)}
             </span>
           </div>
         </div>

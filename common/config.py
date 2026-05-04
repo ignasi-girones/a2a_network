@@ -48,6 +48,19 @@ class Settings(BaseSettings):
     ae3_model: str = "groq/llama-3.1-8b-instant"
     feedback_model: str = "ollama/qwen2.5:14b"
 
+    # Embedding model used by the empirical consensus metrics. The orchestrator
+    # uses this to anchor each agent's position on the AE1↔AE2 axis to the
+    # cosine similarity between the agent's current text and the opening
+    # texts of AE1/AE2 — instead of asking an LLM to subjectively place each
+    # agent on the axis. Any LiteLLM-supported embedding model works.
+    #
+    # Default `gemini/gemini-embedding-2` is the optimal Gemini embedding
+    # available on AI Studio: 8192-token input window (debate texts can grow
+    # to several paragraphs × 3 agents in late rounds), stable (not preview),
+    # and the newest non-preview version. Only needs GEMINI_API_KEY which
+    # the rest of the stack already requires.
+    embedding_model: str = "gemini/gemini-embedding-2"
+
     # Ollama
     ollama_api_base: str = "http://localhost:11434"
 

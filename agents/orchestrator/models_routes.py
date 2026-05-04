@@ -27,7 +27,13 @@ from common.config import settings
 
 
 async def get_models(_request: Request) -> JSONResponse:
-    """Return the LLM model configured for each agent role."""
+    """Return the LLM model configured for each agent role.
+
+    `embedding` is not an A2A worker — it is the model used by the
+    orchestrator to compute the empirical consensus metrics (anchored
+    positions, pairwise similarity). We expose it here so the frontend
+    can display it in the same models bar.
+    """
     return JSONResponse(
         {
             "orchestrator": settings.orchestrator_model,
@@ -36,6 +42,7 @@ async def get_models(_request: Request) -> JSONResponse:
             "ae2": settings.ae2_model,
             "ae3": settings.ae3_model,
             "feedback": settings.feedback_model,
+            "embedding": settings.embedding_model,
         }
     )
 

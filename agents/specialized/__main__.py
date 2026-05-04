@@ -68,8 +68,34 @@ def main():
             build_skill(
                 skill_id="debate",
                 name="Debate",
-                description="Engage in structured debate on assigned topic.",
-                tags=["debate", "analysis"],
+                description=(
+                    "Argues a topic from an ASSIGNED ROLE and PERSPECTIVE in "
+                    "a multi-agent deliberation. The agent will produce a "
+                    "two-section response: AGREEMENTS (points conceded from "
+                    "the other agents) and REFINEMENT (where it still "
+                    "disagrees or refines).\n"
+                    "WHEN TO USE: for questions that have multiple defensible "
+                    "answers (opinions, decisions, comparisons, 'should we…', "
+                    "'is X better than Y…'). Schedule TWO OR MORE debate "
+                    "subtasks IN PARALLEL with contrasting perspectives so "
+                    "the agents can react to each other across rounds. A "
+                    "third agent acting as an independent evaluator works "
+                    "well as a tie-breaker.\n"
+                    "PERSPECTIVE FIELD CONVENTION (mandatory): set "
+                    "`perspective` to '<worker_agent_id>: <role + stance>'. "
+                    "The orchestrator uses the worker_agent_id prefix to "
+                    "PIN the subtask to that specific worker so the same "
+                    "agent keeps its identity across rounds. Examples: "
+                    "'ae1: DevOps engineer, pro-remote', 'ae2: Team lead, "
+                    "pro-onsite', 'ae3: Independent evaluator'. Subsequent "
+                    "rounds can use shorter labels like 'ae1: synthesis 1'.\n"
+                    "DESCRIPTION FIELD: include ROLE, PERSPECTIVE, ROUND, "
+                    "GOAL, and the AGREEMENTS/REFINEMENT format reminder.\n"
+                    "ITERATION: the orchestrator runs a separate consensus "
+                    "loop after this skill executes. Do NOT plan multiple "
+                    "rounds up front — emit only the first parallel batch."
+                ),
+                tags=["debate", "analysis", "multi-agent", "deliberative"],
             )
         ],
         streaming=True,

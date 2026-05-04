@@ -1,194 +1,174 @@
 # A2A Debate Network
 
-Red de 5 agentes autónomos que debaten temas estructurados usando el protocolo **A2A (Agent-to-Agent) v1.0.0**. Cada agente utiliza un proveedor LLM distinto, demostrando agnosticismo de modelo e interoperabilidad entre agentes heterogéneos.
+Red de **6 agentes autónomos** que deliberan en torno a una pregunta del usuario usando el protocolo **A2A (Agent-to-Agent) v1.0.0**. Cada agente puede usar un proveedor LLM distinto, demostrando agnosticismo de modelo e interoperabilidad entre agentes heterogéneos.
 
-Proyecto académico desarrollado como Trabajo de Fin de Grado en Ingeniería Informática.
+A diferencia de un pipeline rígido, el sistema es **agéntico de extremo a extremo**: el orquestador no tiene los pasos hardcodeados. Pregunta a un *AgentRegistry* qué agentes están vivos, le pide a un *Planner* (LLM) que descomponga la pregunta en un grafo de subtareas, y un *PlanExecutor* dispatcha cada subtarea al agente que toque vía A2A.
+
 
 ## Arquitectura
 
 ```
-                          +-----------+
-                          |  Frontend |  React 19 + Tailwind
-                          |  :5173    |  SSE streaming
-                          +-----+-----+
-                                | SendStreamingMessage (JSON-RPC)
-                                v
-                    +-----------+-----------+
-                    |    Orchestrator       |  Groq (Llama 3.3 70B)
-                    |    :9000             |  Coordina todo el flujo
-                    +-+-------+-------+----+
-                      |       |       |
-            A2A       |  A2A  |       |  A2A
-                      v       v       v
-              +-------+  +---+---+  +-+--------+
-              |Normalizer| | AE1  |  |  AE2    |
-              |:9001     | |:9002 |  | :9003   |
-              |Gemini    | |Mistral|  |Cerebras |
-              +----------+ +------+  +---------+
-                                          |
-                            A2A           v
-                          +-------+  +---------+
-                          | MCP   |  |Feedback |
-                          |Tools  |  |:9004    |
-                          |:8100  |  |Ollama   |
-                          +-------+  +---------+
+                     +------------+
+                     |  Frontend  |  React 19 + Tailwind, SSE streaming
+                     |  :8086     |
+                     +-----+------+
+                           | A2A SendStreamingMessage
+                           v
+                     +-----+--------+
+                     | Orchestrator |  Coordina:
+                     |  :8080       |   - AgentRegistry (workers vivos)
+                     |              |   - Planner (LLM → DAG)
+                     |              |   - PlanExecutor (DAG → A2A calls)
+                     |              |   - WorkerSpawner (dynamic scale-out)
+                     |              |   - Consensus loop (LLM-graded)
+                     +--+--+--+--+--+
+                        |  |  |  |
+                  A2A   |  |  |  |   A2A
+              ┌─────────┘  |  |  └────────────┐
+              v            v  v               v
+        +------------+ +-----+ +-----+ +------+ +-----------+
+        | Normalizer | | AE1 | | AE2 | | AE3  | | Feedback  |
+        | :8081      | |:8082| |:8083| |:8087 | | :8084     |
+        | Gemini     | |Mist.| |Cere.| |Groq  | | Ollama    |
+        +------------+ +--+--+ +--+--+ +--+---+ +-----------+
+                          |       |       |
+                          └──MCP──┴──MCP──┘
+                                  v
+                            +-----------+
+                            | MCP Tools |
+                            |  :8085    |
+                            +-----------+
 ```
 
-| Agente | Puerto | Modelo | Proveedor | Agent Card |
-|--------|--------|--------|-----------|------------|
-| Orchestrator | 9000 | `llama-3.3-70b-versatile` | Groq | Estática |
-| Normalizer | 9001 | `gemini-2.5-flash` | Google Gemini | Estática |
-| AE1 (Especializado) | 9002 | `mistral-large-latest` | Mistral AI | Dinámica |
-| AE2 (Especializado) | 9003 | `qwen-3-235b` | Cerebras | Dinámica |
-| Feedback | 9004 | `qwen2.5:14b` | Ollama (local) | Estática |
-| MCP Tools | 8100 | - | - | - |
+| Agente | Puerto | Modelo (default) | Rol |
+|---|---|---|---|
+| Orchestrator | 8080 | `groq/llama-3.3-70b-versatile` | Planner LLM + ejecución del DAG + consensus loop |
+| Normalizer | 8081 | `gemini/gemini-2.5-flash` | Convierte texto plano en JSON estructurado |
+| AE1 | 8082 | `mistral/mistral-large-latest` | Debate (perspectiva 1) |
+| AE2 | 8083 | `cerebras/qwen-3-235b-a22b-instruct-2507` | Debate (perspectiva opuesta) |
+| AE3 | 8087 | `groq/llama-3.1-8b-instant` | Debate como **evaluador independiente** |
+| Feedback | 8084 | `ollama/qwen2.5:14b` | Veredicto final formateado en castellano |
+| MCP Tools | 8085 | — | `web_search`, `calculator` |
 
-## Requisitos previos
+Los modelos se configuran en `.env` (ver `.env.example`). El frontend los carga en runtime vía `GET /models` y los muestra en la cabecera; si cambias `AE3_MODEL` y reinicias, el badge del frontend se actualiza solo.
 
-- **Python 3.12+**
-- **Node.js 20+** y npm
-- **Ollama** ejecutando localmente con el modelo `qwen2.5:14b` (para el agente Feedback)
-- Claves API gratuitas de: [Groq](https://console.groq.com/), [Google AI Studio](https://aistudio.google.com/), [Mistral](https://console.mistral.ai/), [Cerebras](https://cloud.cerebras.ai/)
+## Cómo funciona el flujo agéntico
 
-## Instalación
+Cuando el usuario manda un prompt:
 
-### 1. Clonar y configurar entorno
+1. **Discover.** El orquestador consulta `AgentRegistry` (workers que se han auto-registrado al arrancar) y construye un catálogo `{agent_id, url, skills}`.
+2. **Plan.** Llama al `Planner` (LLM) con el prompt + catálogo. El planner emite un `TaskPlan`: un DAG de subtareas en JSON donde cada subtarea declara su `required_skill`, sus `depends_on` y, si aplica, una `perspective` para enrutado por agente.
+3. **Capacity check.** Si el plan necesita más workers concurrentes de un skill que los registrados, `WorkerSpawner` levanta workers extra como subprocess y espera a que se registren.
+4. **Execute.** `PlanExecutor` recorre el DAG topológicamente: cada batch ready corre en paralelo (`asyncio.gather`), pinneando cada subtarea al worker que su `perspective` indique (o haciendo round-robin si no).
+5. **Consensus loop.** Para preguntas deliberativas, después de la primera ronda de debate el orquestador llama a un LLM evaluador que devuelve `agreement_score`, `positions` por agente (eje 0..1) y listas de `shared_points` y `remaining_disagreements`. Si el score < 0.75 y queda presupuesto, pide al `Planner` una *extensión* — una nueva ronda paralela en la que cada agente re-evalúa honestamente; iterando hasta `MAX_CONSENSUS_EXTENSIONS = 3`.
+6. **Finalize.** El orquestador añade un subtarea final de `format_verdict` que dispatcha al feedback agent — visible como un nodo más en el grafo del frontend.
+7. **Synthesize.** El output del feedback (markdown en castellano con etiqueta de estado del debate) es el veredicto que se devuelve al usuario.
+
+Nada de esto está hardcoded en el orquestador: si añades un worker nuevo con una skill nueva y una `description` clara, el planner la incorporará al razonar sobre nuevos prompts. Las skills se autodocumentan en sus AgentCards (qué hacen, cuándo usarlas, qué inputs esperan, etc.).
+
+## Visualización en el frontend
+
+- **Grafo del plan**: el DAG completo en SVG, con estado por nodo (pendiente / ejecutando / completado / fallido) y la `perspective` de cada subtask. Click en un nodo muestra el output completo del worker.
+- **Evaluación del consenso**: gauge tipo velocímetro con el `agreement_score`, etiqueta (Sin consenso / Consenso parcial / Consenso alcanzado), sparkline de evolución, lista de puntos compartidos y desacuerdos.
+- **Posicionamiento de los agentes**: gráfico de líneas con la trayectoria de cada agente en el eje AE1↔AE2 ronda a ronda.
+- **Registro de eventos**: timeline completo de los eventos SSE emitidos por el orquestador (dispatch, done, consensus_check, plan_ready, etc.).
+- **Veredicto**: el output del feedback agent en markdown.
+
+## Requisitos
+
+- Python 3.12+
+- Node.js 20+ y npm
+- (Opcional) Ollama corriendo localmente con `qwen2.5:14b` para el Feedback agent
+- API keys gratuitas: [Groq](https://console.groq.com/), [Google AI Studio](https://aistudio.google.com/), [Mistral](https://console.mistral.ai/), [Cerebras](https://cloud.cerebras.ai/)
+
+## Instalación rápida
 
 ```bash
 git clone <repo-url>
 cd a2a_network
 
-# Crear entorno virtual
 python -m venv .venv
-
-# Activar entorno
-# Windows:
-.venv\Scripts\activate
-# Linux/macOS:
-source .venv/bin/activate
-
-# Instalar dependencias Python
+source .venv/bin/activate          # Linux/macOS
+# .venv\Scripts\activate           # Windows
 pip install -e ".[dev]"
-```
 
-### 2. Instalar frontend
+cd frontend && npm install && cd ..
 
-```bash
-cd frontend
-npm install
-cd ..
-```
-
-### 3. Configurar API keys
-
-```bash
 cp .env.example .env
+# Edita .env y rellena las API keys + modelos que quieras
 ```
 
-Edita `.env` y añade tus claves API:
-
-```env
-GROQ_API_KEY=gsk_...
-GEMINI_API_KEY=AIza...
-MISTRAL_API_KEY=...
-CEREBRAS_API_KEY=csk-...
-```
-
-### 4. Instalar modelo de Ollama (para Feedback agent)
-
-```bash
-ollama pull qwen2.5:14b
-```
-
-> Si tu máquina no soporta 14B, puedes cambiar `FEEDBACK_MODEL=ollama/qwen2.5:7b` en `.env`.
+`.env.example` ya lista las variables necesarias: API keys, puertos (8080–8087), y modelos de cada agente. Si no especificas un modelo, se usa el default que figura en `common/config.py`.
 
 ## Ejecución
 
-### Windows
-
-```cmd
-start.bat
-```
-
-Opciones:
-- `start.bat` — Todos los procesos en una terminal
-- `start.bat --split` — Cada agente en su propia terminal
-- `start.bat --stop` — Detener todos los agentes
-
-### Linux / macOS
-
+### Linux/macOS/WSL — local (sin Docker)
 ```bash
-chmod +x start_all.sh
 bash start_all.sh
 ```
 
-### Docker Compose
-
+Cada agente loguea en `logs/<service>.log`. Para tail en vivo del orquestador:
 ```bash
-docker compose up --build
+tail -f logs/orchestrator.log
+```
+
+### Docker Compose
+```bash
+docker compose up -d --build
 ```
 
 ### Acceso
-
-Una vez iniciado, abre **http://localhost:5173** en el navegador.
-
-## Uso
-
-1. Escribe un tema de debate en el panel izquierdo (ej: *"¿Es mejor el trabajo remoto o presencial para equipos de desarrollo?"*)
-2. El timeline de la derecha muestra el progreso en tiempo real vía SSE:
-   - Normalización del input
-   - Asignación de roles a los agentes
-   - Opiniones iniciales de AE1 y AE2
-   - Rondas de debate con argumentos cruzados
-   - Evaluación de consenso
-3. El veredicto final aparece en el panel izquierdo
+Una vez arrancado, abre **http://localhost:8086** en el navegador.
 
 ## Estructura del proyecto
 
 ```
 a2a_network/
 ├── agents/
-│   ├── orchestrator/     # Coordinador del flujo de debate
-│   ├── normalizer/       # Transforma input en JSON estructurado
-│   ├── specialized/      # Agentes de debate (AE1, AE2) con roles dinámicos
-│   ├── feedback/         # Genera informe final legible
-│   └── mcp_tools/        # Servidor MCP con calculator y web_search
-├── common/
-│   ├── a2a_helpers.py    # Utilidades A2A: cards, clientes, comunicación
-│   ├── config.py         # Configuración centralizada (Pydantic Settings)
-│   ├── llm_provider.py   # Abstracción LLM via LiteLLM
-│   └── models.py         # DTOs internos del sistema
-├── frontend/             # React 19 + Vite + TailwindCSS
-├── docs/                 # Documentación técnica detallada
-│   ├── agents.md         # Descripción de cada agente
-│   ├── flow.md           # Flujo del debate paso a paso
-│   └── a2a-protocol.md   # Uso del protocolo A2A v1.0.0
+│   ├── orchestrator/       # Planner LLM + executor agéntico
+│   │   ├── agent_registry.py     # Registro dinámico de workers
+│   │   ├── planner.py            # LLM → TaskPlan DAG
+│   │   ├── plan_executor.py      # Recorre DAG, dispatch A2A
+│   │   ├── agentic_orchestrator.py  # Director: junta todo
+│   │   ├── worker_spawner.py     # Spawneo dinámico de workers
+│   │   ├── models_routes.py      # GET /models (modelos por agente)
+│   │   └── flow_manager.py       # legacy, no se usa en el path activo
+│   ├── normalizer/         # Skill: normalize_input
+│   ├── specialized/        # Skill: debate (instanciado como AE1, AE2, AE3)
+│   ├── feedback/           # Skill: format_verdict
+│   └── mcp_tools/          # Servidor MCP (web_search, calculator)
+├── common/                 # config, llm_provider, models, registry_client
+├── frontend/               # React 19 + Vite + Tailwind
+├── docs/
+│   ├── agents.md           # Detalle por agente
+│   ├── flow.md             # Flujo agéntico paso a paso
+│   └── a2a-protocol.md     # Decisiones sobre A2A v1.0.0
 ├── docker-compose.yml
-├── start.bat             # Launcher Windows
-├── start_all.sh          # Launcher Linux/macOS
-└── .env.example          # Plantilla de configuración
+├── start_all.sh
+└── .env.example
 ```
 
 ## Documentación
 
-| Documento | Descripción |
-|-----------|-------------|
-| [docs/agents.md](docs/agents.md) | Arquitectura y responsabilidades de cada agente |
-| [docs/flow.md](docs/flow.md) | Flujo completo del debate con diagramas de secuencia |
-| [docs/a2a-protocol.md](docs/a2a-protocol.md) | Decisiones de diseño sobre el protocolo A2A v1.0.0 |
+| Documento | Contenido |
+|---|---|
+| [docs/agents.md](docs/agents.md) | Cada agente, su skill auto-descrito, modelo, archivos |
+| [docs/flow.md](docs/flow.md) | Flujo agéntico: discover → plan → execute → consensus → finalize |
+| [docs/a2a-protocol.md](docs/a2a-protocol.md) | Uso del protocolo A2A v1.0.0 |
 
-## Stack tecnológico
+## Stack
 
 | Capa | Tecnología |
-|------|-----------|
+|---|---|
 | Protocolo inter-agente | A2A v1.0.0 (`a2a-sdk 1.0.0a0`) — JSON-RPC sobre HTTP |
-| Herramientas MCP | FastMCP (`calculator`, `web_search`) |
-| Abstracción LLM | LiteLLM — 5 proveedores simultáneos |
+| Herramientas externas | MCP via FastMCP (`web_search`, `calculator`) |
+| Abstracción LLM | LiteLLM — cualquier provider compatible |
+| Orquestación | Pure Python — `asyncio.gather` sobre el DAG, sin frameworks |
 | Servidores | Starlette + Uvicorn (ASGI) |
-| Frontend | React 19 + Vite 8 + TailwindCSS 4 |
+| Frontend | React 19 + Vite 8 + TailwindCSS 4 + SVG (sin chart libs) |
 | Streaming | SSE via `SendStreamingMessage` + `ReadableStream` |
-| Validación | Pydantic v2 + Protocol Buffers |
-| Contenedores | Docker Compose (7 servicios) |
+| Validación | Pydantic v2 |
+| Contenedores | Docker Compose (8 servicios) |
 
 ## Licencia
 

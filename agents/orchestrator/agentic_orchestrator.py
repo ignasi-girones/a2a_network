@@ -29,11 +29,15 @@ import logging
 from collections import Counter
 
 from agents.orchestrator.agent_registry import AgentRegistry
+from agents.orchestrator.consensus_metrics import (
+    ConsensusMetrics,
+    compute_metrics,
+)
 from agents.orchestrator.plan_executor import PlanExecutor, ProgressCallback
 from agents.orchestrator.planner import Planner
 from agents.orchestrator.worker_spawner import WorkerSpawner
 from common.config import settings
-from common.llm_provider import llm_complete
+from common.llm_provider import llm_complete, llm_embed
 from common.models import SubTask, TaskPlan
 
 MAX_CONSENSUS_EXTENSIONS = 3
@@ -57,59 +61,18 @@ mention the subtask IDs — present the answer as if the reader never saw
 the plan."""
 
 
-CONSENSUS_CHECK_PROMPT = """\
-Three debate agents have just exchanged their latest arguments in a structured
-deliberation:
- - AE1 opened by advocating one side
- - AE2 opened by advocating the opposing side
- - AE3 is an independent evaluator with no assigned stance
+CONSENSUS_TEXTS_PROMPT = """\
+Three debate agents have just exchanged their latest arguments in a
+structured deliberation. Your ONLY job is to extract two short bullet lists
+of concrete textual claims from the latest exchange:
+  - shared_points: substantive points the agents have come to agree on,
+    using their actual claims (not platitudes like "both have a point").
+  - remaining_disagreements: concrete claims where the agents still disagree.
 
-Your job is to evaluate whether they have substantively converged on a
-shared, evidence-driven answer — and to score each agent's CURRENT position
-on a continuous axis where:
-   0.0 = endorses AE1's opening stance
-   1.0 = endorses AE2's opening stance
-   0.5 = no clear position either way (genuinely balanced or evasive)
-
-CRITICAL — read this before scoring:
-1. Score where each agent IS NOW, not where they started. If AE1 has
-   genuinely changed sides and now endorses AE2's stance, AE1's position
-   should be HIGH (close to 1.0), not low. The same applies in reverse.
-2. Look for explicit side-shift markers like "You changed my mind on X",
-   "I now agree with...", "the evidence on X is decisive". Treat these as
-   strong signals to move that agent toward the side they shifted to.
-3. Do NOT reward forced centrism. Two patterns to flag:
-   a. "Both have a point" with no specific commitments — this is evasion,
-      not consensus. agreement_score should be LOW even if all three sit
-      near 0.5, because there is no real shared position.
-   b. Wishy-washy "common ground" that doesn't actually answer the
-      question — same treatment.
-4. Reward HONEST CONVERGENCE TOWARD A SIDE. If the evidence presented
-   clearly favours one side and all three agents have moved toward it
-   (positions clustered near 0.0 OR clustered near 1.0), that is a high
-   agreement_score — possibly higher than a clustering near 0.5.
-5. Only assign agreement_score >= 0.75 when the three latest positions
-   actually agree on a SUBSTANTIVE answer to the original question, not
-   just on procedural tone. The shared_points list must contain concrete
-   claims, not platitudes.
-
-HARD CONSISTENCY RULE — agreement_score MUST track positions:
-The `agreement_score` is the geometric clustering of `positions`, NOT a
-separate "tone" or "vibes" metric. Use this scale, anchored to the spread
-between the highest and lowest position values (max − min):
-   spread <= 0.15  →  agreement_score in [0.85, 1.00]   (tight cluster)
-   spread <= 0.25  →  agreement_score in [0.70, 0.85]
-   spread <= 0.40  →  agreement_score in [0.50, 0.70]
-   spread <= 0.60  →  agreement_score in [0.30, 0.50]
-   spread >  0.60  →  agreement_score in [0.00, 0.30]   (clearly apart)
-If you see one agent at 0.05 and another at 0.92 (spread > 0.85), the
-agreement_score CANNOT be high — it must be in [0.00, 0.30] no matter how
-politely worded the messages were. Polite tone is not consensus.
-
-You may bias slightly within each band based on the *quality* of the
-agreement (concrete shared_points push toward the high end of the band;
-vague platitudes push toward the low end). But you must stay inside the
-band the spread dictates.
+You are NOT scoring convergence. The orchestrator computes the agreement
+score and per-agent positions empirically from the texts (cosine similarity
+of embeddings to the AE1/AE2 opening anchors, dispersion, movement, and
+explicit concession markers). Do NOT speculate on numerical scores here.
 
 AE1 latest position ({ae1_perspective}):
 {ae1_text}
@@ -120,29 +83,16 @@ AE2 latest position ({ae2_perspective}):
 AE3 latest position ({ae3_perspective}):
 {ae3_text}
 
-Return ONLY valid JSON with this exact shape:
+Return ONLY valid JSON with EXACTLY this shape:
 {{
-  "agreement_score": <float 0.0 to 1.0 — overall convergence across the three>,
-  "positions": {{
-    "ae1": <float 0.0 to 1.0>,
-    "ae2": <float 0.0 to 1.0>,
-    "ae3": <float 0.0 to 1.0>
-  }},
-  "shared_points": ["concrete claim 1", "..."],
-  "remaining_disagreements": ["concrete disagreement 1", "..."],
-  "reason": "<one-sentence rationale that mentions whether convergence is toward AE1's side, AE2's side, the centre, or unclear>"
+  "shared_points": ["concrete shared claim 1", "concrete shared claim 2"],
+  "remaining_disagreements": ["concrete disagreement 1", "concrete disagreement 2"],
+  "reason": "<one short sentence summarising what the agents agreed on and what they still disagree about>"
 }}
 
-agreement_score interpretation:
-- >= 0.75: substantive consensus on the actual question, no further rounds needed
-- 0.50 - 0.74: partial convergence, one re-evaluation round could close the gap
-- < 0.50: still meaningfully apart, OR all three are using vague centrist
-  language without committing to a real answer (vagueness is NOT consensus)
-
-The `positions` object is what the UI uses to plot how the agents are moving
-across rounds — be diligent and consistent. A position score reflects
-endorsement of a side based on the agent's current claims; movement across
-rounds is what the user is watching for."""
+Use plain Spanish in the bullet content (translate from English if the
+debate happened in English). If a list is empty (genuinely no shared points
+or no remaining disagreements), return an empty array."""
 
 
 def _peak_concurrent_demand(plan: TaskPlan) -> dict[str, int]:
@@ -271,6 +221,61 @@ class AgenticOrchestrator:
         merged_ordered: list[SubTask] = list(plan.subtasks)
         all_subtasks: dict[str, SubTask] = {t.id: t for t in plan.subtasks}
 
+        # Capture the AE1 / AE2 OPENING texts as anchors for the empirical
+        # axis. By definition AE1's opening = position 0.0 and AE2's opening
+        # = position 1.0; every subsequent text is placed by cosine similarity
+        # against those two anchors. The anchors are computed exactly ONCE
+        # and reused across rounds so the axis stays stable.
+        ae1_anchor_text = merged_results.get(latest["ae1"], "")
+        ae2_anchor_text = merged_results.get(latest["ae2"], "")
+        ae1_anchor_emb: list[float] = []
+        ae2_anchor_emb: list[float] = []
+        await self.progress.on_progress(
+            "embedding",
+            f"Anclando eje con {settings.embedding_model} (aperturas AE1/AE2)",
+            {
+                "phase": "anchors",
+                "model": settings.embedding_model,
+                "n_texts": 2,
+            },
+        )
+        try:
+            anchor_embs = await llm_embed([ae1_anchor_text, ae2_anchor_text])
+            ae1_anchor_emb, ae2_anchor_emb = anchor_embs[0], anchor_embs[1]
+            logger.info(
+                "Consensus anchors embedded with model %s (dim=%d)",
+                settings.embedding_model,
+                len(ae1_anchor_emb),
+            )
+            await self.progress.on_progress(
+                "embedding_done",
+                f"Anclas listas (dim={len(ae1_anchor_emb)})",
+                {
+                    "phase": "anchors",
+                    "model": settings.embedding_model,
+                    "dim": len(ae1_anchor_emb),
+                },
+            )
+        except Exception as e:
+            err = f"{type(e).__name__}: {e}"
+            logger.warning(
+                "Embedding the consensus anchors failed using model %s — %s. "
+                "Empirical metrics will degrade to default positions and score 0.",
+                settings.embedding_model,
+                err,
+            )
+            await self.progress.on_progress(
+                "embedding_failed",
+                f"Embeddings cayeron con {settings.embedding_model}",
+                {
+                    "phase": "anchors",
+                    "model": settings.embedding_model,
+                    "error": err,
+                },
+            )
+
+        prev_positions: dict[str, float] | None = None
+
         for attempt in range(MAX_CONSENSUS_EXTENSIONS):
             agent_texts: dict[str, str] = {}
             agent_perspectives: dict[str, str] = {}
@@ -282,12 +287,20 @@ class AgenticOrchestrator:
                 agent_texts[tag] = merged_results.get(tid, "")
                 agent_perspectives[tag] = task.perspective or tag.upper()
 
-            score, reason, positions, shared_points, disagreements = (
-                await self._check_consensus(agent_texts, agent_perspectives)
+            metrics, shared_points, disagreements, reason = await self._check_consensus(
+                agent_texts=agent_texts,
+                agent_perspectives=agent_perspectives,
+                ae1_anchor_emb=ae1_anchor_emb,
+                ae2_anchor_emb=ae2_anchor_emb,
+                prev_positions=prev_positions,
             )
+            score = metrics.agreement_score
+            positions = metrics.positions
+            prev_positions = dict(positions)
+
             # Emit a dedicated event so the frontend can plot how the agents
             # have moved on the AE1↔AE2 axis after this round, including the
-            # substantive points the model identified as shared / unresolved.
+            # raw component metrics for full auditability.
             await self.progress.on_progress(
                 "agent_positions",
                 f"Posiciones tras ronda {attempt}",
@@ -297,6 +310,9 @@ class AgenticOrchestrator:
                     "agreement_score": score,
                     "shared_points": shared_points,
                     "remaining_disagreements": disagreements,
+                    "components": metrics.components,
+                    "movement": metrics.movement,
+                    "concessions": metrics.concessions,
                     "subtask_ids": {
                         tag: latest.get(tag) for tag in ("ae1", "ae2", "ae3")
                     },
@@ -312,6 +328,7 @@ class AgenticOrchestrator:
                     "positions": positions,
                     "shared_points": shared_points,
                     "remaining_disagreements": disagreements,
+                    "components": metrics.components,
                     "round": attempt,
                 },
             )
@@ -409,101 +426,169 @@ class AgenticOrchestrator:
 
     async def _check_consensus(
         self,
+        *,
         agent_texts: dict[str, str],
         agent_perspectives: dict[str, str],
-    ) -> tuple[float, str, dict[str, float], list[str], list[str]]:
-        """LLM-graded consensus score, per-agent positions, and the
-        substantive points the model identified as shared / unresolved.
+        ae1_anchor_emb: list[float],
+        ae2_anchor_emb: list[float],
+        prev_positions: dict[str, float] | None,
+    ) -> tuple[ConsensusMetrics, list[str], list[str], str]:
+        """Compute the empirical consensus metrics for the latest exchange
+        plus an LLM-extracted summary of shared/disagreement points.
 
-        Returns (agreement_score, reason, positions, shared_points,
-        remaining_disagreements). `positions` maps each agent tag to a float
-        in [0, 1] representing where that agent currently sits on the AE1↔AE2
-        axis (0 = AE1 stance, 1 = AE2 stance, 0.5 = neutral). Missing
-        positions are filled with 0.5 as a safe default.
+        Returns (metrics, shared_points, remaining_disagreements, reason).
+
+        The numeric components — `agreement_score`, per-agent positions,
+        dispersion, movement, similarity, concession_score — all come from
+        `consensus_metrics.compute_metrics`, which is reproducible and
+        independent of any LLM judgement. The LLM is only invoked to extract
+        the textual lists of shared points and remaining disagreements,
+        because those need natural-language understanding and have no closed
+        algorithmic form.
+
+        If embeddings or the LLM call fail, we degrade gracefully: positions
+        fall back to anchor-defaults (AE1=0, AE2=1, AE3=0.5), score is 0,
+        and the textual lists end up empty.
         """
-        prompt = CONSENSUS_CHECK_PROMPT.format(
-            ae1_perspective=agent_perspectives.get("ae1", "AE1"),
-            ae2_perspective=agent_perspectives.get("ae2", "AE2"),
-            ae3_perspective=agent_perspectives.get("ae3", "AE3"),
-            ae1_text=agent_texts.get("ae1", ""),
-            ae2_text=agent_texts.get("ae2", ""),
-            ae3_text=agent_texts.get("ae3", ""),
-        )
+        # 1. Numeric metrics from embeddings. Only feasible if we have anchors.
+        metrics: ConsensusMetrics | None = None
+        if ae1_anchor_emb and ae2_anchor_emb:
+            try:
+                tags = [t for t in ("ae1", "ae2", "ae3") if t in agent_texts]
+                texts_in_order = [agent_texts[t] for t in tags]
+                await self.progress.on_progress(
+                    "embedding",
+                    f"Embedeando {len(tags)} texto(s) con {settings.embedding_model}",
+                    {
+                        "phase": "round",
+                        "model": settings.embedding_model,
+                        "n_texts": len(tags),
+                        "agent_tags": tags,
+                    },
+                )
+                embs = await llm_embed(texts_in_order)
+                embeddings_by_tag = {tag: embs[i] for i, tag in enumerate(tags)}
+                await self.progress.on_progress(
+                    "embedding_done",
+                    f"Embeddings listos para {len(tags)} agente(s)",
+                    {
+                        "phase": "round",
+                        "model": settings.embedding_model,
+                        "dim": len(embs[0]) if embs else 0,
+                    },
+                )
+                metrics = compute_metrics(
+                    embeddings=embeddings_by_tag,
+                    texts={t: agent_texts[t] for t in tags},
+                    ae1_anchor_emb=ae1_anchor_emb,
+                    ae2_anchor_emb=ae2_anchor_emb,
+                    previous_positions=prev_positions,
+                )
+            except Exception as e:
+                err = f"{type(e).__name__}: {e}"
+                logger.warning(
+                    "Empirical consensus metrics failed (%s). "
+                    "Falling back to default positions and zero score.",
+                    err,
+                )
+                await self.progress.on_progress(
+                    "embedding_failed",
+                    f"Embeddings cayeron en evaluación: {err}",
+                    {
+                        "phase": "round",
+                        "model": settings.embedding_model,
+                        "error": err,
+                    },
+                )
+
+        if metrics is None:
+            # Fallback: anchor-default positions (AE1=0, AE2=1, AE3=0.5),
+            # zero score. The deliberation will exhaust its round budget
+            # without ever claiming consensus, which is the safe default.
+            fallback_positions = {
+                "ae1": 0.0,
+                "ae2": 1.0,
+                "ae3": 0.5,
+            }
+            fallback_positions = {
+                k: v for k, v in fallback_positions.items() if k in agent_texts
+            }
+            metrics = ConsensusMetrics(
+                positions=fallback_positions,
+                dispersion=1.0,
+                pairwise_similarity=0.0,
+                movement={k: 0.0 for k in fallback_positions},
+                movement_score=0.0,
+                concessions={k: 0 for k in fallback_positions},
+                concession_score=0.0,
+                agreement_score=0.0,
+                components={"fallback": True},
+            )
+
+        # 2. LLM call ONLY for the textual summary — shared_points,
+        # remaining_disagreements, and a brief reason. The score and
+        # positions are NOT requested here; they come from `metrics`.
+        shared: list[str] = []
+        disagreements: list[str] = []
+        reason = ""
         try:
+            prompt = CONSENSUS_TEXTS_PROMPT.format(
+                ae1_perspective=agent_perspectives.get("ae1", "AE1"),
+                ae2_perspective=agent_perspectives.get("ae2", "AE2"),
+                ae3_perspective=agent_perspectives.get("ae3", "AE3"),
+                ae1_text=agent_texts.get("ae1", ""),
+                ae2_text=agent_texts.get("ae2", ""),
+                ae3_text=agent_texts.get("ae3", ""),
+            )
             raw = await llm_complete(
                 model=settings.orchestrator_model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.2,
-                max_tokens=600,
+                max_tokens=400,
                 response_format={"type": "json_object"},
             )
             data = json.loads(raw)
-            score = float(data.get("agreement_score", 0.0))
-            reason = str(data.get("reason", "")).strip() or "no reason provided"
-            raw_positions = data.get("positions") or {}
-            positions: dict[str, float] = {}
-            for tag in ("ae1", "ae2", "ae3"):
-                v = raw_positions.get(tag)
-                try:
-                    positions[tag] = max(0.0, min(1.0, float(v))) if v is not None else 0.5
-                except (TypeError, ValueError):
-                    positions[tag] = 0.5
-            shared = [str(p).strip() for p in (data.get("shared_points") or []) if p]
-            disagreements = [
-                str(p).strip() for p in (data.get("remaining_disagreements") or []) if p
+            shared = [
+                str(p).strip()
+                for p in (data.get("shared_points") or [])
+                if p
             ]
-            score = max(0.0, min(1.0, score))
-
-            # Backstop: enforce that agreement_score actually tracks the
-            # geometric spread of positions, even if the LLM ignored the
-            # consistency rule in the prompt. Otherwise the user sees
-            # contradictions like "agreement 0.92" while AE1 sits at 0.05
-            # and AE2 at 0.92 (positions clearly apart).
-            pos_values = [v for v in positions.values() if v is not None]
-            if len(pos_values) >= 2:
-                spread = max(pos_values) - min(pos_values)
-                # Same bands as the prompt; we cap the LLM's score to the
-                # top of the band the spread dictates so it can never claim
-                # more agreement than the geometry shows.
-                if spread <= 0.15:
-                    cap = 1.00
-                elif spread <= 0.25:
-                    cap = 0.85
-                elif spread <= 0.40:
-                    cap = 0.70
-                elif spread <= 0.60:
-                    cap = 0.50
-                else:
-                    cap = 0.30
-                if score > cap:
-                    logger.info(
-                        "Capping agreement_score %.2f → %.2f because position "
-                        "spread is %.2f (positions=%s)",
-                        score, cap, spread, positions,
-                    )
-                    score = cap
-                    reason = (
-                        f"{reason} [score capped to {cap:.2f} by orchestrator "
-                        f"because position spread {spread:.2f} is too wide for "
-                        f"a higher agreement score]"
-                    )
-
-            return (
-                score,
-                reason,
-                positions,
-                shared,
-                disagreements,
-            )
+            disagreements = [
+                str(p).strip()
+                for p in (data.get("remaining_disagreements") or [])
+                if p
+            ]
+            reason = str(data.get("reason", "")).strip()
         except Exception as e:
-            logger.warning("Consensus check failed, defaulting to no-consensus: %s", e)
-            return (
-                0.0,
-                f"consensus check error: {e}",
-                {"ae1": 0.0, "ae2": 1.0, "ae3": 0.5},
-                [],
-                [],
+            logger.warning("Textual consensus extraction failed: %s", e)
+            reason = f"textual extraction error: {e}"
+
+        # Compose a short auto-explanation of the score from the components,
+        # so the UI can show it and the user can audit which factor dominates.
+        if not reason:
+            reason = "no reason provided"
+        comp = metrics.components
+        explanation_parts = []
+        if "dispersion" in comp:
+            explanation_parts.append(
+                f"dispersión={comp['dispersion']:.2f}"
             )
+        if "pairwise_similarity" in comp:
+            explanation_parts.append(
+                f"similitud={comp['pairwise_similarity']:.2f}"
+            )
+        if "movement_score" in comp:
+            explanation_parts.append(
+                f"movimiento={comp['movement_score']:.2f}"
+            )
+        if "concession_score" in comp:
+            explanation_parts.append(
+                f"concesiones={comp['concession_score']:.2f}"
+            )
+        if explanation_parts:
+            reason = f"{reason} [score={metrics.agreement_score:.2f} • " + ", ".join(explanation_parts) + "]"
+
+        return metrics, shared, disagreements, reason
 
     async def _ensure_capacity(self, plan: TaskPlan) -> None:
         """Spawn extra workers if peak concurrent demand exceeds supply."""

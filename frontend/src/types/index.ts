@@ -37,6 +37,22 @@ export interface AgentPositionsSample {
   agreement_score?: number;
 }
 
+// ── Empirical components feeding the agreement_score ──
+export interface ConsensusComponents {
+  dispersion?: number;          // raw [0,1], higher = more apart
+  dispersion_score?: number;    // 1 - dispersion, contributes positively
+  pairwise_similarity?: number; // mean cosine similarity across agent pairs
+  movement_score?: number;      // 0..1 — agents reacting between rounds
+  concession_score?: number;    // 0..1 — explicit "you changed my mind" signals
+  weights?: {
+    dispersion?: number;
+    similarity?: number;
+    movement?: number;
+    concessions?: number;
+  };
+  fallback?: boolean;
+}
+
 // ── Snapshot of the consensus evaluation after a given round ──
 export interface ConsensusSnapshot {
   round: number;
@@ -45,6 +61,9 @@ export interface ConsensusSnapshot {
   positions?: AgentPositions;
   shared_points: string[];
   remaining_disagreements: string[];
+  components?: ConsensusComponents;
+  movement?: AgentPositions;     // per-agent movement since previous round
+  concessions?: { ae1?: number; ae2?: number; ae3?: number };
 }
 
 // ── Events emitted by the orchestrator's ProgressCallback ──
@@ -73,6 +92,9 @@ export interface DebateEvent {
     shared_points?: string[];
     remaining_disagreements?: string[];
     extension_attempt?: number;
+    components?: ConsensusComponents;
+    movement?: AgentPositions;
+    concessions?: { ae1?: number; ae2?: number; ae3?: number };
 
     // Legacy / generic
     agent?: string;

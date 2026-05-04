@@ -27,11 +27,22 @@ def main():
             skill_id="format_verdict",
             name="Format Verdict",
             description=(
-                "Takes a structured debate summary (JSON) and produces "
-                "a human-readable report with executive summary, key "
-                "arguments, verdict, and confidence level."
+                "Produces the final human-readable report of a deliberation. "
+                "Output is structured Markdown in Spanish with sections: "
+                "executive summary, participants, key arguments, points of "
+                "agreement, remaining disagreements, final verdict, and an "
+                "explicit debate-state label (Consenso alcanzado / Consenso "
+                "parcial / Sin consenso).\n"
+                "WHEN TO USE: as the LAST step of any plan that needs a "
+                "polished user-facing answer. The orchestrator may also "
+                "append it automatically after a consensus loop, so include "
+                "it here only if you want this skill to be the explicit sink "
+                "of your plan; otherwise the orchestrator will add it.\n"
+                "INPUT: depend on every subtask whose output should be "
+                "summarised — typically the last debate round of every agent.\n"
+                "OUTPUT: the final answer the user will see."
             ),
-            tags=["feedback", "formatting", "reporting"],
+            tags=["feedback", "formatting", "final-step", "reporting"],
         )
     ]
 

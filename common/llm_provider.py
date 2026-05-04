@@ -3,7 +3,7 @@ import os
 from collections.abc import AsyncIterator
 
 import litellm
-from litellm import acompletion
+from litellm import acompletion, aembedding
 from litellm.exceptions import RateLimitError
 
 from common.config import settings
@@ -59,6 +59,41 @@ async def llm_complete(
                 raise
             wait = [10, 25][attempt]
             await asyncio.sleep(wait)
+
+
+async def llm_embed(
+    texts: list[str],
+    model: str | None = None,
+) -> list[list[float]]:
+    """Embed a list of texts using LiteLLM's aembedding.
+
+    Used by the consensus metrics module to anchor agent positions to real
+    text similarity instead of relying on an LLM evaluator's subjective
+    intuition.
+
+    Args:
+        texts: list of strings to embed.
+        model: LiteLLM-style embedding model slug. If None, falls back to
+            settings.embedding_model.
+
+    Returns:
+        A list of embedding vectors (list of floats), aligned with the
+        input. Raises if the embedding call fails — the caller decides
+        whether to degrade gracefully.
+    """
+    if not texts:
+        return []
+    chosen = model or settings.embedding_model
+    kwargs: dict = {
+        "model": chosen,
+        "input": texts,
+    }
+    if chosen.startswith("ollama/"):
+        kwargs["api_base"] = settings.ollama_api_base
+
+    response = await aembedding(**kwargs)
+    # litellm returns a list of {"embedding": [...]} dicts in `data`.
+    return [d["embedding"] for d in response.data]
 
 
 async def llm_stream(

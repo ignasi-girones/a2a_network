@@ -216,7 +216,7 @@ export function ConsensusGauge({ history }: Props) {
           {spread !== null && (
             <span
               className="mt-1 text-[10px] text-gray-500 font-mono"
-              title="Diferencia entre la posición más alta y la más baja entre los 3 agentes. Si es alta y el score también, hay incoherencia."
+              title="Diferencia entre la posición más alta y la más baja en el eje AE1↔AE2. Es uno de los componentes que alimentan el score."
             >
               dispersión: {spread.toFixed(2)}
             </span>
@@ -299,6 +299,70 @@ export function ConsensusGauge({ history }: Props) {
         </div>
       </div>
 
+      {/* Empirical component breakdown */}
+      {latest?.components && !latest.components.fallback && (
+        <div className="border border-gray-200 rounded-lg p-3 bg-gray-50">
+          <div className="flex items-center justify-between mb-2">
+            <h4 className="text-xs font-semibold text-gray-700">
+              Componentes del score (medidos sobre los textos)
+            </h4>
+            <span className="text-[10px] text-gray-400">
+              ponderado · suma = {latest.agreement_score.toFixed(2)}
+            </span>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-[11px]">
+            <ComponentBar
+              label="Cohesión"
+              value={latest.components.dispersion_score ?? 0}
+              weight={latest.components.weights?.dispersion ?? 0.4}
+              hint="1 − dispersión: cuán cerca están los 3 agentes en el eje AE1↔AE2"
+              color="bg-blue-500"
+            />
+            <ComponentBar
+              label="Similitud"
+              value={latest.components.pairwise_similarity ?? 0}
+              weight={latest.components.weights?.similarity ?? 0.35}
+              hint="Similitud coseno media de los embeddings de los 3 textos"
+              color="bg-emerald-500"
+            />
+            <ComponentBar
+              label="Movimiento"
+              value={latest.components.movement_score ?? 0}
+              weight={latest.components.weights?.movement ?? 0.15}
+              hint="Cuánto se han desplazado los agentes desde la ronda anterior (saturado a ~0.25)"
+              color="bg-fuchsia-500"
+            />
+            <ComponentBar
+              label="Concesiones"
+              value={latest.components.concession_score ?? 0}
+              weight={latest.components.weights?.concessions ?? 0.10}
+              hint="Marcadores explícitos como 'me has convencido', 'cambié de opinión'"
+              color="bg-amber-500"
+            />
+          </div>
+          {typeof latest.components.dispersion === 'number' && (
+            <p className="mt-2 text-[10px] text-gray-500">
+              Dispersión real entre posiciones:{' '}
+              <span className="font-mono">
+                {latest.components.dispersion.toFixed(2)}
+              </span>
+              {' · '}
+              Score = Σ (componente × peso). Todos los componentes se calculan
+              algorítmicamente desde los textos; el LLM solo extrae los
+              puntos compartidos y desacuerdos.
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* Fallback notice if metrics could not be computed */}
+      {latest?.components?.fallback && (
+        <div className="border border-amber-200 rounded-lg p-2 bg-amber-50 text-[11px] text-amber-800">
+          No se pudieron calcular las métricas empíricas (¿modelo de
+          embeddings caído?). El score se mantiene en 0 hasta que se restaure.
+        </div>
+      )}
+
       {/* Shared points and remaining disagreements */}
       {latest &&
         (latest.shared_points.length > 0 ||
@@ -357,6 +421,44 @@ export function ConsensusGauge({ history }: Props) {
             </div>
           </div>
         )}
+    </div>
+  );
+}
+
+// ── Small helper sub-component for the empirical breakdown ─────────────────
+interface ComponentBarProps {
+  label: string;
+  value: number;       // raw component value in [0, 1]
+  weight: number;      // weight in the weighted sum
+  hint: string;        // tooltip
+  color: string;       // tailwind bg colour
+}
+
+function ComponentBar({ label, value, weight, hint, color }: ComponentBarProps) {
+  const safe = Math.max(0, Math.min(1, value));
+  const contribution = safe * weight;
+  return (
+    <div className="bg-white border border-gray-200 rounded p-2" title={hint}>
+      <div className="flex items-baseline justify-between">
+        <span className="font-medium text-gray-700">{label}</span>
+        <span className="text-[10px] text-gray-400 font-mono">
+          ×{weight.toFixed(2)}
+        </span>
+      </div>
+      <div className="mt-1 flex items-center gap-1.5">
+        <div className="flex-1 h-1.5 bg-gray-100 rounded overflow-hidden">
+          <div
+            className={`${color} h-1.5 rounded`}
+            style={{ width: `${(safe * 100).toFixed(1)}%`, transition: 'width 0.4s' }}
+          />
+        </div>
+        <span className="text-[10px] font-mono text-gray-600 w-10 text-right">
+          {safe.toFixed(2)}
+        </span>
+      </div>
+      <p className="mt-0.5 text-[10px] text-gray-500 font-mono">
+        contribuye <span className="font-semibold">+{contribution.toFixed(3)}</span>
+      </p>
     </div>
   );
 }

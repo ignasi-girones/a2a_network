@@ -21,7 +21,7 @@ Cada agente publica un descriptor JSON en `/.well-known/agent-card.json` que des
   "name": "Normalizer Agent",
   "description": "Analyzes and normalizes user prompts...",
   "supportedInterfaces": [{
-    "url": "http://localhost:9001",
+    "url": "http://localhost:8081",
     "protocolBinding": "JSONRPC",
     "protocolVersion": "1.0"
   }],

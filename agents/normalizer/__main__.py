@@ -27,11 +27,18 @@ def main():
             skill_id="normalize_input",
             name="Normalize Input",
             description=(
-                "Transforms free-text user input into a structured JSON "
-                "format with topic, domain, question type, constraints, "
-                "and suggested debate perspectives."
+                "Converts a raw free-text user prompt into a structured JSON "
+                "object with: topic, domain, question type, explicit "
+                "constraints, and suggested contrasting perspectives.\n"
+                "WHEN TO USE: as the FIRST step of any plan whose user input "
+                "arrives as raw natural language. Downstream subtasks should "
+                "depend on this one so they receive structured context "
+                "instead of having to parse the free text themselves.\n"
+                "INPUT: the user's original prompt (no extra context needed).\n"
+                "OUTPUT: a single JSON object — pass its id as a `depends_on` "
+                "to any subtask that benefits from structured context."
             ),
-            tags=["normalization", "parsing", "structuring"],
+            tags=["normalization", "parsing", "preprocessing", "first-step"],
         )
     ]
 
