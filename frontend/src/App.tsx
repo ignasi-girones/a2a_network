@@ -1,11 +1,15 @@
+/**
+ * App.tsx — versión con doble vista.
+ *
+ *   🎭 Vista Usuario  — mesa redonda con personajes (UserView) — sin info técnica
+ *   📊 Vista Técnica  — paneles originales con gráficos y log (TechnicalView)
+ */
+
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { Network, Theater, BarChart3 } from 'lucide-react';
 import { startDebateStream } from './api/sse';
-import { AgentPositionsChart } from './components/AgentPositionsChart';
-import { ConsensusGauge } from './components/ConsensusGauge';
-import { DebateGraph } from './components/DebateGraph';
-import { DebateTimeline } from './components/DebateTimeline';
-import { PromptInput } from './components/PromptInput';
-import { VerdictDisplay } from './components/VerdictDisplay';
+import { TechnicalView } from './views/TechnicalView';
+import { UserView } from './views/UserView';
 import type {
   AgentPositionsSample,
   ConsensusSnapshot,
@@ -33,15 +37,8 @@ interface ExtendedState extends DebateState {
   consensusHistory: ConsensusSnapshot[];
 }
 
-/**
- * Fold a single streaming event into the runtime map.
- *
- * - subtask_dispatch → mark running, record worker_id
- * - subtask_done     → mark done, store full text output
- * - subtask_failed   → mark failed, store error
- *
- * Anything else is a no-op for the runtime map (it goes to the timeline log).
- */
+type ViewMode = 'user' | 'technical';
+
 function applyEventToRuntime(
   prev: Record<string, SubtaskRuntime>,
   event: DebateEvent,
@@ -95,36 +92,30 @@ function App() {
     consensusHistory: [],
   });
 
-  const [showTimeline, setShowTimeline] = useState(true);
+  const [viewMode, setViewMode] = useState<ViewMode>('user');
+  const [activeTopic, setActiveTopic] = useState('');
   const [models, setModels] = useState<ModelMap>({});
-  const timelineRef = useRef<HTMLDivElement>(null);
+  const cancelledRef = useRef(false);
 
-  // Load the per-agent LLM model the orchestrator was started with. Falls
-  // back to empty silently if the endpoint isn't reachable yet.
   useEffect(() => {
-    let cancelled = false;
+    cancelledRef.current = false;
     (async () => {
       try {
         const res = await fetch('/api/models');
         if (!res.ok) return;
         const data = (await res.json()) as ModelMap;
-        if (!cancelled) setModels(data);
+        if (!cancelledRef.current) setModels(data);
       } catch {
-        // Quietly ignore — the badges will just show "—".
+        // Silencio
       }
     })();
     return () => {
-      cancelled = true;
+      cancelledRef.current = true;
     };
   }, []);
 
-  const scrollToBottom = () => {
-    if (timelineRef.current) {
-      timelineRef.current.scrollTop = timelineRef.current.scrollHeight;
-    }
-  };
-
   const handleSubmit = useCallback(async (prompt: string) => {
+    setActiveTopic(prompt);
     setState({
       status: 'running',
       events: [],
@@ -140,11 +131,6 @@ function App() {
       prompt,
       (event: DebateEvent) => {
         setState((prev) => {
-          // `plan_ready` events arrive multiple times: once for the initial
-          // plan, again after each consensus extension (with the merged
-          // plan), and finally when the format_verdict step is appended.
-          // We always trust the latest emitted plan but PRESERVE runtime
-          // state for any subtask whose status we already track.
           const incomingPlan =
             event.stage === 'plan_ready' && event.data?.plan
               ? (event.data.plan as TaskPlan)
@@ -153,17 +139,12 @@ function App() {
           let nextPlan = prev.plan;
           let baseRuntime = prev.runtime;
           if (incomingPlan) {
-            // Merge so we never lose nodes from earlier emissions even if
-            // the backend ever emits a partial plan.
             const knownIds = new Set(prev.plan?.subtasks.map((t) => t.id) ?? []);
             const mergedSubtasks = [
               ...(prev.plan?.subtasks ?? []),
               ...incomingPlan.subtasks.filter((t) => !knownIds.has(t.id)),
             ];
-            nextPlan = {
-              ...incomingPlan,
-              subtasks: mergedSubtasks,
-            };
+            nextPlan = { ...incomingPlan, subtasks: mergedSubtasks };
             baseRuntime = Object.fromEntries(
               mergedSubtasks.map((t) => [
                 t.id,
@@ -172,7 +153,6 @@ function App() {
             );
           }
 
-          // Capture position-tracking samples emitted by the consensus loop.
           let nextPositions = prev.positions;
           if (
             event.stage === 'agent_positions' &&
@@ -184,15 +164,10 @@ function App() {
               positions: event.data.positions,
               agreement_score: event.data.agreement_score,
             };
-            // Replace any existing sample at the same round (defensive — the
-            // backend only emits each round once today).
             const without = prev.positions.filter((p) => p.round !== sample.round);
             nextPositions = [...without, sample].sort((a, b) => a.round - b.round);
           }
 
-          // Capture consensus snapshots — agent_positions carries the full
-          // payload (score + shared/disagreements) so we use it as the source
-          // of truth for the gauge.
           let nextConsensus = prev.consensusHistory;
           if (
             event.stage === 'agent_positions' &&
@@ -210,19 +185,12 @@ function App() {
               movement: event.data.movement,
               concessions: event.data.concessions,
             };
-            const without = prev.consensusHistory.filter(
-              (s) => s.round !== snap.round,
-            );
-            nextConsensus = [...without, snap].sort(
-              (a, b) => a.round - b.round,
-            );
+            const without = prev.consensusHistory.filter((s) => s.round !== snap.round);
+            nextConsensus = [...without, snap].sort((a, b) => a.round - b.round);
           } else if (
             event.stage === 'consensus_check' &&
             typeof event.data?.agreement_score === 'number'
           ) {
-            // consensus_check carries the auto-generated `reason` with the
-            // metric breakdown. Merge it into the matching round's snapshot
-            // if one already exists, otherwise create a fresh entry.
             const round =
               typeof event.data.round === 'number'
                 ? event.data.round
@@ -233,22 +201,15 @@ function App() {
               agreement_score: event.data.agreement_score,
               reason: event.data.reason ?? existing?.reason,
               positions: event.data.positions ?? existing?.positions,
-              shared_points:
-                event.data.shared_points ?? existing?.shared_points ?? [],
+              shared_points: event.data.shared_points ?? existing?.shared_points ?? [],
               remaining_disagreements:
-                event.data.remaining_disagreements ??
-                existing?.remaining_disagreements ??
-                [],
+                event.data.remaining_disagreements ?? existing?.remaining_disagreements ?? [],
               components: event.data.components ?? existing?.components,
               movement: existing?.movement,
               concessions: existing?.concessions,
             };
-            const without = prev.consensusHistory.filter(
-              (s) => s.round !== round,
-            );
-            nextConsensus = [...without, merged].sort(
-              (a, b) => a.round - b.round,
-            );
+            const without = prev.consensusHistory.filter((s) => s.round !== round);
+            nextConsensus = [...without, merged].sort((a, b) => a.round - b.round);
           }
 
           return {
@@ -260,162 +221,154 @@ function App() {
             consensusHistory: nextConsensus,
           };
         });
-        setTimeout(scrollToBottom, 50);
       },
       (verdict: string) => {
-        setState((prev) => ({
-          ...prev,
-          status: 'completed',
-          verdict,
-        }));
+        setState((prev) => ({ ...prev, status: 'completed', verdict }));
       },
       (error: string) => {
-        setState((prev) => ({
-          ...prev,
-          status: 'error',
-          error,
-        }));
+        setState((prev) => ({ ...prev, status: 'error', error }));
       },
     );
   }, []);
 
+  const handleReset = useCallback(() => {
+    setActiveTopic('');
+    setState({
+      status: 'idle',
+      events: [],
+      verdict: null,
+      error: null,
+      plan: null,
+      runtime: {},
+      positions: [],
+      consensusHistory: [],
+    });
+  }, []);
+
+  const isUserView = viewMode === 'user';
+
   return (
-    <div className="min-h-screen bg-gray-50">
-      {/* Header */}
-      <header className="bg-white border-b border-gray-200 px-6 py-3">
-        <div className="max-w-7xl mx-auto flex items-center justify-between">
-          <div>
-            <h1 className="text-lg font-bold text-gray-900">
-              A2A Debate Network
-            </h1>
-            <p className="text-xs text-gray-500">
-              Protocolo A2A v1.0.0 &mdash; Red de agentes con debate estructurado
-            </p>
+    <div className={isUserView ? 'min-h-screen user-shell' : 'min-h-screen bg-gray-50'}>
+      <header
+        className={
+          isUserView
+            ? 'sticky top-0 z-30 border-b border-cyan-300/10 bg-slate-950/70 px-6 py-3 backdrop-blur-xl'
+            : 'bg-white border-b border-gray-200 px-6 py-3'
+        }
+      >
+        <div className="max-w-7xl mx-auto flex items-center justify-between gap-4 flex-wrap">
+          <div className="flex items-center gap-2.5">
+            <div
+              className={
+                isUserView
+                  ? 'w-8 h-8 rounded-lg bg-cyan-400/15 ring-1 ring-cyan-300/30 flex items-center justify-center shadow-[0_0_24px_rgba(34,211,238,0.25)]'
+                  : 'w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shadow-sm'
+              }
+            >
+              <Network size={16} className={isUserView ? 'text-cyan-200' : 'text-white'} />
+            </div>
+            <div>
+              <h1 className={`text-sm font-semibold leading-tight ${isUserView ? 'text-slate-100' : 'text-slate-800'}`}>
+                A2A Debate Network
+              </h1>
+              <p className={`text-[10px] leading-tight ${isUserView ? 'text-cyan-100/55' : 'text-slate-500'}`}>
+                Tres agentes deliberando hasta llegar a un consenso
+              </p>
+            </div>
           </div>
-          <div className="flex flex-wrap gap-2 text-[10px]">
-            <span
-              className="bg-blue-100 text-blue-700 px-2 py-1 rounded font-medium"
-              title={models.ae1}
+
+          <div
+            className={
+              isUserView
+                ? 'ml-auto flex items-center gap-1 rounded-full border border-white/10 bg-white/5 p-1 shadow-inner'
+                : 'ml-auto flex items-center gap-1 bg-slate-100 rounded-full p-1 shadow-inner'
+            }
+          >
+            <button
+              onClick={() => setViewMode('user')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all ${
+                viewMode === 'user'
+                  ? isUserView
+                    ? 'bg-cyan-300 text-slate-950 shadow-[0_0_18px_rgba(34,211,238,0.35)]'
+                    : 'bg-white text-indigo-600 shadow-sm'
+                  : isUserView
+                    ? 'text-slate-300 hover:text-white'
+                    : 'text-slate-500 hover:text-slate-700'
+              }`}
+              aria-pressed={viewMode === 'user'}
             >
-              AE1: {modelLabel(models.ae1)}
-            </span>
-            <span
-              className="bg-emerald-100 text-emerald-700 px-2 py-1 rounded font-medium"
-              title={models.ae2}
+              <Theater size={13} />
+              Usuario
+            </button>
+            <button
+              onClick={() => setViewMode('technical')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all ${
+                viewMode === 'technical'
+                  ? 'bg-white text-indigo-600 shadow-sm'
+                  : isUserView
+                    ? 'text-slate-300 hover:text-white'
+                    : 'text-slate-500 hover:text-slate-700'
+              }`}
+              aria-pressed={viewMode === 'technical'}
             >
-              AE2: {modelLabel(models.ae2)}
-            </span>
-            <span
-              className="bg-fuchsia-100 text-fuchsia-700 px-2 py-1 rounded font-medium"
-              title={models.ae3}
-            >
-              AE3: {modelLabel(models.ae3)}
-            </span>
-            <span
-              className="bg-indigo-100 text-indigo-700 px-2 py-1 rounded font-medium"
-              title={models.orchestrator}
-            >
-              Orquestador: {modelLabel(models.orchestrator)}
-            </span>
-            <span
-              className="bg-amber-100 text-amber-700 px-2 py-1 rounded font-medium"
-              title={models.normalizer}
-            >
-              Normalizador: {modelLabel(models.normalizer)}
-            </span>
-            <span
-              className="bg-gray-100 text-gray-700 px-2 py-1 rounded font-medium"
-              title={models.feedback}
-            >
-              Feedback: {modelLabel(models.feedback)}
-            </span>
-            <span
-              className="bg-cyan-100 text-cyan-700 px-2 py-1 rounded font-medium"
-              title={models.embedding}
-            >
-              Embeddings: {modelLabel(models.embedding)}
-            </span>
+              <BarChart3 size={13} />
+              Técnica
+            </button>
           </div>
+
+          {/* Badges de modelos solo en vista técnica */}
+          {viewMode === 'technical' && (
+            <div className="flex flex-wrap gap-2 text-[10px]">
+              <span className="bg-blue-100 text-blue-700 px-2 py-1 rounded font-medium" title={models.ae1}>
+                AE1: {modelLabel(models.ae1)}
+              </span>
+              <span className="bg-emerald-100 text-emerald-700 px-2 py-1 rounded font-medium" title={models.ae2}>
+                AE2: {modelLabel(models.ae2)}
+              </span>
+              <span className="bg-fuchsia-100 text-fuchsia-700 px-2 py-1 rounded font-medium" title={models.ae3}>
+                AE3: {modelLabel(models.ae3)}
+              </span>
+              <span className="bg-indigo-100 text-indigo-700 px-2 py-1 rounded font-medium" title={models.orchestrator}>
+                Orq: {modelLabel(models.orchestrator)}
+              </span>
+              <span className="bg-amber-100 text-amber-700 px-2 py-1 rounded font-medium" title={models.normalizer}>
+                Norm: {modelLabel(models.normalizer)}
+              </span>
+              <span className="bg-gray-100 text-gray-700 px-2 py-1 rounded font-medium" title={models.feedback}>
+                Fb: {modelLabel(models.feedback)}
+              </span>
+            </div>
+          )}
         </div>
       </header>
 
-      {/* Main content — two panels */}
-      <main className="max-w-7xl mx-auto p-4 grid grid-cols-1 lg:grid-cols-3 gap-4 h-[calc(100vh-64px)]">
-        {/* Left panel: Input + Verdict */}
-        <div className="lg:col-span-1 space-y-4 overflow-y-auto">
-          <div className="bg-white rounded-lg border border-gray-200 p-4">
-            <h2 className="text-sm font-semibold text-gray-700 mb-3">Tema de debate</h2>
-            <PromptInput
-              onSubmit={handleSubmit}
-              disabled={state.status === 'running'}
-            />
-          </div>
-          <VerdictDisplay
+      <main className={isUserView ? 'mx-auto min-h-[calc(100vh-65px)] max-w-7xl p-4 lg:p-6' : 'max-w-7xl mx-auto p-4 h-[calc(100vh-72px)] overflow-y-auto'}>
+        {viewMode === 'user' ? (
+          <UserView
+            status={state.status}
+            events={state.events}
+            runtime={state.runtime}
+            positions={state.positions}
+            consensusHistory={state.consensusHistory}
             verdict={state.verdict}
             error={state.error}
-            status={state.status}
-            lastEvent={state.events.length > 0 ? state.events[state.events.length - 1] : null}
+            topic={activeTopic}
+            onSubmit={handleSubmit}
+            onReset={handleReset}
           />
-        </div>
-
-        {/* Right panel: DAG graph on top, timeline log below */}
-        <div className="lg:col-span-2 flex flex-col gap-4 overflow-y-auto">
-          {/* Graph card */}
-          <div className="bg-white rounded-lg border border-gray-200 p-4">
-            <div className="flex items-center justify-between mb-3">
-              <h2 className="text-sm font-semibold text-gray-700">
-                Grafo del plan
-                {state.plan && (
-                  <span className="ml-2 text-[10px] font-normal text-gray-400">
-                    {state.plan.subtasks.length} subtareas
-                  </span>
-                )}
-              </h2>
-              <span className="text-[10px] text-gray-400">
-                Haz clic en un nodo para ver su salida
-              </span>
-            </div>
-            <DebateGraph plan={state.plan} runtime={state.runtime} />
-          </div>
-
-          {/* Consensus gauge card */}
-          <div className="bg-white rounded-lg border border-gray-200 p-4">
-            <ConsensusGauge history={state.consensusHistory} />
-          </div>
-
-          {/* Agent positions chart card */}
-          <div className="bg-white rounded-lg border border-gray-200 p-4">
-            <AgentPositionsChart samples={state.positions} />
-          </div>
-
-          {/* Timeline card (collapsible) */}
-          <div className="bg-white rounded-lg border border-gray-200 p-4">
-            <button
-              onClick={() => setShowTimeline((v) => !v)}
-              className="w-full flex items-center justify-between text-sm font-semibold text-gray-700 mb-2"
-            >
-              <span>
-                Registro de eventos
-                {state.events.length > 0 && (
-                  <span className="ml-2 text-[10px] font-normal text-gray-400">
-                    {state.events.length} eventos
-                  </span>
-                )}
-              </span>
-              <span className="text-gray-400 text-xs">
-                {showTimeline ? '▾ ocultar' : '▸ mostrar'}
-              </span>
-            </button>
-            {showTimeline && (
-              <div
-                ref={timelineRef}
-                className="overflow-y-auto max-h-[50vh]"
-              >
-                <DebateTimeline events={state.events} plan={state.plan} />
-              </div>
-            )}
-          </div>
-        </div>
+        ) : (
+          <TechnicalView
+            status={state.status}
+            events={state.events}
+            verdict={state.verdict}
+            error={state.error}
+            plan={state.plan}
+            runtime={state.runtime}
+            positions={state.positions}
+            consensusHistory={state.consensusHistory}
+            onSubmit={handleSubmit}
+          />
+        )}
       </main>
     </div>
   );
