@@ -135,13 +135,11 @@ def install_mcp_hooks(agent_id: str) -> None:
     _ERROR_MARKERS = ("Error", "failed:", "no article found", "no results")
 
     @functools.wraps(original_call)
-    async def _instrumented_mcp(
-        tool: str, args: dict, *, whitelist: list[str]
-    ) -> str | None:
+    async def _instrumented_mcp(tool: str, args: dict, **kwargs) -> str | None:
         start = time.perf_counter()
         status = "ok"
         try:
-            result = await original_call(tool, args, whitelist=whitelist)
+            result = await original_call(tool, args, **kwargs)
             if result is None or (
                 isinstance(result, str)
                 and any(marker in result for marker in _ERROR_MARKERS)
