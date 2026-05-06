@@ -83,9 +83,13 @@ def uvicorn_tls_kwargs(service: str | None = None) -> dict:
 def httpx_tls_kwargs(service: str | None = None) -> dict:
     """Return kwargs for ``httpx.AsyncClient(**kwargs)`` doing mTLS.
 
-    The returned dict carries:
-      - ``verify``: path to our CA so we trust peer server certs
-      - ``cert``: tuple of (cert, key) we present as a client to peers
+    Returns ``{"verify": <ssl.SSLContext>}`` — we build the SSL context
+    explicitly with ``ssl.create_default_context`` and load the client
+    cert via ``load_cert_chain``. Passing the file paths separately
+    (``verify=ca_path`` + ``cert=(pem, key)``) leaves httpcore to assemble
+    the context internally and that path produced silent TLS-level
+    disconnects against uvicorn's mTLS server (curl with the same files
+    worked, so the issue is the implicit context).
 
     Empty dict when TLS is off.
     """
@@ -93,7 +97,6 @@ def httpx_tls_kwargs(service: str | None = None) -> dict:
         return {}
     name = _service_name(service)
     cert, key, ca = _cert_paths(name)
-    return {
-        "verify": ca,
-        "cert": (cert, key),
-    }
+    ctx = ssl.create_default_context(cafile=ca)
+    ctx.load_cert_chain(certfile=cert, keyfile=key)
+    return {"verify": ctx}
