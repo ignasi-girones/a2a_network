@@ -13,3 +13,10 @@ frontend/dist/
 *.db
 *.sqlite
 logs/
+
+# TLS certificates — generated locally by cert-init service.
+# Only the generation script and README are tracked.
+certs/*
+!certs/generate.sh
+!certs/README.md
+!certs/.gitkeep

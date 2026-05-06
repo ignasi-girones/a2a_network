@@ -1,0 +1,169 @@
+# docker-compose.production.yml — TLS overlay for the A2A network.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.production.yml up -d
+#
+# What this overlay adds on top of the base compose:
+#   - cert-init: generates root CA + per-service certs into ./certs (idempotent)
+#   - mcp-tls:    Caddy sidecar in front of mcp-tools doing TLS termination + mTLS
+#   - For every backend agent and the orchestrator: mounts ./certs:/certs:ro,
+#     sets TLS_ENABLED=true so uvicorn picks up ssl_keyfile/ssl_certfile/ssl_ca_certs.
+#   - Prometheus and Grafana also receive the cert volume so they can scrape
+#     and serve over HTTPS respectively.
+#
+# Self-signed CA "PTI_12.1" — import certs/ca.pem into your browser to silence
+# warnings on https://localhost:8080 and https://localhost:8086.
+
+services:
+
+  # ── Cert generation ─────────────────────────────────────────────────────────
+  # One-shot service that runs before everything else. It generates the CA
+  # and per-service certs into ./certs (host bind mount). The other services
+  # depend_on it with `condition: service_completed_successfully` so they
+  # only start once the certs are ready.
+
+  cert-init:
+    image: alpine:3.19
+    volumes:
+      - ./certs:/certs
+    command:
+      - sh
+      - -c
+      - "apk add --no-cache openssl >/dev/null && sh /certs/generate.sh"
+    restart: "no"
+
+  # ── Caddy sidecar in front of mcp-tools ─────────────────────────────────────
+  # The MCP server (FastMCP) doesn't natively speak TLS; we put Caddy in
+  # front to terminate TLS and enforce mTLS, then reverse-proxy to the
+  # internal HTTP MCP listener.
+
+  mcp-tls:
+    image: caddy:2-alpine
+    volumes:
+      - ./certs:/certs:ro
+      - ./monitoring/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+    ports:
+      - "8085:8085"
+    networks:
+      - a2a_net
+    depends_on:
+      cert-init:
+        condition: service_completed_successfully
+      mcp-tools:
+        condition: service_started
+    restart: unless-stopped
+
+  # ── Backend agents: mount certs + enable TLS ────────────────────────────────
+
+  mcp-tools:
+    environment:
+      MCP_PORT: "8086"   # internal-only; Caddy at :8085 fronts it externally
+    ports: !reset []     # wipe the host port binding from base compose
+    depends_on:
+      cert-init:
+        condition: service_completed_successfully
+
+  orchestrator:
+    volumes:
+      - ./certs:/certs:ro
+    environment:
+      TLS_ENABLED: "true"
+      TLS_CERT_DIR: "/certs"
+      TLS_SERVICE_NAME: "orchestrator"
+      MCP_HOST: "mcp-tls"
+    depends_on:
+      cert-init:
+        condition: service_completed_successfully
+
+  normalizer:
+    volumes:
+      - ./certs:/certs:ro
+    environment:
+      TLS_ENABLED: "true"
+      TLS_CERT_DIR: "/certs"
+      TLS_SERVICE_NAME: "normalizer"
+    depends_on:
+      cert-init:
+        condition: service_completed_successfully
+
+  ae1:
+    volumes:
+      - ./certs:/certs:ro
+    environment:
+      TLS_ENABLED: "true"
+      TLS_CERT_DIR: "/certs"
+      TLS_SERVICE_NAME: "ae1"
+      MCP_HOST: "mcp-tls"
+    depends_on:
+      cert-init:
+        condition: service_completed_successfully
+
+  ae2:
+    volumes:
+      - ./certs:/certs:ro
+    environment:
+      TLS_ENABLED: "true"
+      TLS_CERT_DIR: "/certs"
+      TLS_SERVICE_NAME: "ae2"
+      MCP_HOST: "mcp-tls"
+    depends_on:
+      cert-init:
+        condition: service_completed_successfully
+
+  ae3:
+    volumes:
+      - ./certs:/certs:ro
+    environment:
+      TLS_ENABLED: "true"
+      TLS_CERT_DIR: "/certs"
+      TLS_SERVICE_NAME: "ae3"
+      MCP_HOST: "mcp-tls"
+    depends_on:
+      cert-init:
+        condition: service_completed_successfully
+
+  feedback:
+    volumes:
+      - ./certs:/certs:ro
+    environment:
+      TLS_ENABLED: "true"
+      TLS_CERT_DIR: "/certs"
+      TLS_SERVICE_NAME: "feedback"
+    depends_on:
+      cert-init:
+        condition: service_completed_successfully
+
+  # ── Frontend: Vite serves over HTTPS, proxies to https://orchestrator:8080 ──
+
+  frontend:
+    volumes:
+      - ./certs:/certs:ro
+    environment:
+      VITE_TLS_ENABLED: "true"
+      VITE_PROXY_TARGET: "https://orchestrator:8080"
+    depends_on:
+      cert-init:
+        condition: service_completed_successfully
+
+  # ── Prometheus: scrape over HTTPS with mTLS client cert ─────────────────────
+
+  prometheus:
+    volumes:
+      - ./certs:/certs:ro
+      - ./monitoring/prometheus/prometheus.production.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      cert-init:
+        condition: service_completed_successfully
+
+  # ── Grafana: serve over HTTPS ───────────────────────────────────────────────
+
+  grafana:
+    volumes:
+      - ./certs:/certs:ro
+    environment:
+      GF_SERVER_PROTOCOL: "https"
+      GF_SERVER_CERT_FILE: "/certs/grafana.pem"
+      GF_SERVER_CERT_KEY: "/certs/grafana.key"
+    depends_on:
+      cert-init:
+        condition: service_completed_successfully
