@@ -93,3 +93,8 @@ done
 echo ""
 echo "All certs ready in $CERT_DIR:"
 ls -la "$CERT_DIR" | awk '/\.(pem|key)$/ {print "  " $NF}'
+
+# The agent containers run as uid 1000 (USER app in the Dockerfile). Hand
+# every cert+key over to that uid so the non-root processes can read their
+# own private keys (mode 600 → readable only by owner).
+chown -R 1000:1000 "$CERT_DIR"
