@@ -74,6 +74,12 @@ services:
       cert-init:
         condition: service_completed_successfully
 
+  # The base compose's healthcheck is `curl http://localhost:<port>/.well-known/...`,
+  # which fails outright now that every agent serves HTTPS+mTLS. We override
+  # each healthcheck with a simple TCP probe — enough to confirm uvicorn is
+  # bound and accepting connections, without needing curl to juggle the
+  # client cert.
+
   orchestrator:
     volumes:
       - ./certs:/certs:ro
@@ -82,6 +88,8 @@ services:
       TLS_CERT_DIR: "/certs"
       TLS_SERVICE_NAME: "orchestrator"
       MCP_HOST: "mcp-tls"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket,sys; s=socket.socket(); s.settimeout(2); s.connect(('localhost', 8080)); sys.exit(0)"]
     depends_on:
       cert-init:
         condition: service_completed_successfully
@@ -95,6 +103,8 @@ services:
       TLS_ENABLED: "true"
       TLS_CERT_DIR: "/certs"
       TLS_SERVICE_NAME: "normalizer"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket,sys; s=socket.socket(); s.settimeout(2); s.connect(('localhost', 8081)); sys.exit(0)"]
     depends_on:
       cert-init:
         condition: service_completed_successfully
@@ -107,6 +117,8 @@ services:
       TLS_CERT_DIR: "/certs"
       TLS_SERVICE_NAME: "ae1"
       MCP_HOST: "mcp-tls"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket,sys; s=socket.socket(); s.settimeout(2); s.connect(('localhost', 8082)); sys.exit(0)"]
     depends_on:
       cert-init:
         condition: service_completed_successfully
@@ -121,6 +133,8 @@ services:
       TLS_CERT_DIR: "/certs"
       TLS_SERVICE_NAME: "ae2"
       MCP_HOST: "mcp-tls"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket,sys; s=socket.socket(); s.settimeout(2); s.connect(('localhost', 8083)); sys.exit(0)"]
     depends_on:
       cert-init:
         condition: service_completed_successfully
@@ -135,6 +149,8 @@ services:
       TLS_CERT_DIR: "/certs"
       TLS_SERVICE_NAME: "ae3"
       MCP_HOST: "mcp-tls"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket,sys; s=socket.socket(); s.settimeout(2); s.connect(('localhost', 8087)); sys.exit(0)"]
     depends_on:
       cert-init:
         condition: service_completed_successfully
@@ -148,6 +164,8 @@ services:
       TLS_ENABLED: "true"
       TLS_CERT_DIR: "/certs"
       TLS_SERVICE_NAME: "feedback"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket,sys; s=socket.socket(); s.settimeout(2); s.connect(('localhost', 8084)); sys.exit(0)"]
     depends_on:
       cert-init:
         condition: service_completed_successfully
