@@ -55,7 +55,7 @@ async def register_self_with_orchestrator(
     url: str,
     card: dict[str, Any],
     *,
-    max_retries: int = 30,
+    max_retries: int = 90,
     retry_delay: float = 2.0,
 ) -> bool:
     """Register this agent with the orchestrator's registry.
