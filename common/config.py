@@ -44,7 +44,7 @@ class Settings(BaseSettings):
     orchestrator_model: str = "groq/llama-3.3-70b-versatile"
     normalizer_model: str = "gemini/gemini-2.5-flash"
     ae1_model: str = "mistral/mistral-large-latest"
-    ae2_model: str = "cerebras/qwen-3-235b-a22b-instruct-2507"
+    ae2_model: str = "cerebras/llama3.1-8b"
     ae3_model: str = "groq/llama-3.1-8b-instant"
     feedback_model: str = "ollama/qwen2.5:14b"
 

@@ -45,7 +45,7 @@ A diferencia de un pipeline rígido, el sistema es **agéntico de extremo a extr
 | Orchestrator | 8080 | `groq/llama-3.3-70b-versatile` | Planner LLM + ejecución del DAG + consensus loop |
 | Normalizer | 8081 | `gemini/gemini-2.5-flash` | Convierte texto plano en JSON estructurado |
 | AE1 | 8082 | `mistral/mistral-large-latest` | Debate (perspectiva 1) |
-| AE2 | 8083 | `cerebras/qwen-3-235b-a22b-instruct-2507` | Debate (perspectiva opuesta) |
+| AE2 | 8083 | `cerebras/llama3.1-8b` | Debate (perspectiva opuesta) |
 | AE3 | 8087 | `groq/llama-3.1-8b-instant` | Debate como **evaluador independiente** |
 | Feedback | 8084 | `ollama/qwen2.5:14b` | Veredicto final formateado en castellano |
 | MCP Tools | 8085 | — | `web_search`, `calculator` |

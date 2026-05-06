@@ -11,7 +11,7 @@ Endpoint:
           "orchestrator": "groq/llama-3.3-70b-versatile",
           "normalizer": "gemini/gemini-2.5-flash",
           "ae1": "mistral/mistral-large-latest",
-          "ae2": "cerebras/qwen-3-235b-a22b-instruct-2507",
+          "ae2": "cerebras/llama3.1-8b",
           "ae3": "groq/llama-3.1-8b-instant",
           "feedback": "ollama/qwen2.5:14b"
         }

@@ -4,7 +4,7 @@
  *   "groq/llama-3.3-70b-versatile"        → "Groq · llama-3.3-70b"
  *   "mistral/mistral-large-latest"         → "Mistral · large-latest"
  *   "ollama/qwen2.5:14b"                   → "Ollama · qwen2.5:14b"
- *   "cerebras/qwen-3-235b-a22b-instruct..." → "Cerebras · qwen-3-235b"
+ *   "cerebras/llama3.1-8b"                   → "Cerebras · llama3.1-8b"
  */
 
 const PROVIDER_NAMES: Record<string, string> = {
@@ -26,7 +26,7 @@ export function modelLabel(slug: string | undefined | null): string {
   const providerLabel = PROVIDER_NAMES[provider] ?? provider;
 
   // Trim a verbose model name without losing the family (llama-3.3-70b,
-  // qwen-3-235b, etc.).
+  // llama3.1-8b, etc.).
   const short = rest
     .replace(/-instruct.*$/i, '')
     .replace(/-versatile$/i, '')
