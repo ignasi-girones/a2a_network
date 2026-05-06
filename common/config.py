@@ -84,6 +84,20 @@ class Settings(BaseSettings):
     # endpoint and wraps LLM/MCP calls with timing instrumentation.
     telemetry_enabled: bool = True
 
+    # TLS (mTLS in production). When `tls_enabled=true`, every agent serves
+    # HTTPS using the cert at `tls_cert_dir/<service>.pem` and *requires*
+    # peer client certs signed by `tls_cert_dir/ca.pem`. Outgoing httpx
+    # calls also present the agent's own cert. The matching cert is picked
+    # up from `TLS_SERVICE_NAME` env (set per container in the production
+    # overlay) or `SELF_HOST` as a fallback.
+    #
+    # Default is `false` so local dev (start.bat, base docker-compose.yml)
+    # keeps using plain HTTP — TLS only activates with the production
+    # overlay (`docker-compose.production.yml`), which sets these env vars
+    # explicitly.
+    tls_enabled: bool = False
+    tls_cert_dir: str = "/certs"
+
     # CORS origins for the frontend. Comma-separated list in env.
     # Defaults cover common local dev ports; set explicitly in production.
     cors_origins: str = "http://localhost:3000,http://localhost:5173"
@@ -91,6 +105,10 @@ class Settings(BaseSettings):
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @property
+    def url_scheme(self) -> str:
+        return "https" if self.tls_enabled else "http"
 
     def agent_url(self, port: int) -> str:
         """URL used *by the orchestrator* to reach another agent.
@@ -101,15 +119,15 @@ class Settings(BaseSettings):
         advertised URL (built via `own_url`), so the orchestrator reads
         that from the registry rather than constructing it here.
         """
-        return f"http://{self.orchestrator_host}:{port}"
+        return f"{self.url_scheme}://{self.orchestrator_host}:{port}"
 
     def orchestrator_url(self) -> str:
         """URL used by workers to reach the orchestrator (e.g. to register)."""
-        return f"http://{self.orchestrator_host}:{self.orchestrator_port}"
+        return f"{self.url_scheme}://{self.orchestrator_host}:{self.orchestrator_port}"
 
     def mcp_url(self) -> str:
         """URL specialized agents use to reach the MCP tools server."""
-        return f"http://{self.mcp_host}:{self.mcp_port}/mcp"
+        return f"{self.url_scheme}://{self.mcp_host}:{self.mcp_port}/mcp"
 
     def own_url(self, port: int) -> str:
         """URL this process advertises to the registry.
@@ -118,7 +136,7 @@ class Settings(BaseSettings):
         Compose, each service sets SELF_HOST to its own service name so
         peer containers can resolve it.
         """
-        return f"http://{self.self_host}:{port}"
+        return f"{self.url_scheme}://{self.self_host}:{port}"
 
 
 settings = Settings()
