@@ -117,6 +117,21 @@ tail -f logs/orchestrator.log
 docker compose up -d --build
 ```
 
+### Docker Compose — modo producción con mTLS
+Toda la red interna se securiza con certificados autofirmados (CA `PTI_12.1`)
+y mTLS bidireccional. El servicio `cert-init` genera la CA y un cert por
+agente en `./certs/` la primera vez (idempotente):
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.production.yml up -d --build
+```
+
+Para que el navegador no muestre warning, importa `certs/ca.pem` en tu
+almacén de Autoridades de Certificación de confianza (ver `certs/README.md`).
+
+Tras eso, accede a **https://localhost:8086** (frontend) y **https://localhost:3000**
+(Grafana) sin alertas de certificado.
+
 ### Acceso
 Una vez arrancado, abre **http://localhost:8086** en el navegador.
 

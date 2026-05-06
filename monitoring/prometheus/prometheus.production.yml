@@ -1,0 +1,72 @@
+# Prometheus scrape configuration for the production deployment (mTLS).
+#
+# Each agent's /metrics endpoint is served over HTTPS with mTLS — Prometheus
+# both verifies the agent's server cert against our CA and presents its own
+# client cert (signed by the same CA). The CN/SAN of each agent matches its
+# Docker service name.
+#
+# The MCP sidecar metrics on :8185 stays plain HTTP per the security
+# baseline (internal-only Docker network, never exposed to the host).
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+# Default tls_config reused by every HTTPS job below — mTLS client cert.
+scrape_configs:
+  - job_name: "a2a-orchestrator"
+    scheme: https
+    tls_config:
+      ca_file: /certs/ca.pem
+      cert_file: /certs/prometheus.pem
+      key_file: /certs/prometheus.key
+      server_name: orchestrator
+    static_configs:
+      - targets: ["orchestrator:8080"]
+        labels:
+          agent_type: "orchestrator"
+
+  - job_name: "a2a-normalizer"
+    scheme: https
+    tls_config:
+      ca_file: /certs/ca.pem
+      cert_file: /certs/prometheus.pem
+      key_file: /certs/prometheus.key
+      server_name: normalizer
+    static_configs:
+      - targets: ["normalizer:8081"]
+        labels:
+          agent_type: "normalizer"
+
+  - job_name: "a2a-feedback"
+    scheme: https
+    tls_config:
+      ca_file: /certs/ca.pem
+      cert_file: /certs/prometheus.pem
+      key_file: /certs/prometheus.key
+      server_name: feedback
+    static_configs:
+      - targets: ["feedback:8084"]
+        labels:
+          agent_type: "feedback"
+
+  - job_name: "a2a-debate-agents"
+    scheme: https
+    tls_config:
+      ca_file: /certs/ca.pem
+      cert_file: /certs/prometheus.pem
+      key_file: /certs/prometheus.key
+    static_configs:
+      - targets: ["ae1:8082"]
+        labels: {agent_type: "ae", ae: "ae1"}
+      - targets: ["ae2:8083"]
+        labels: {agent_type: "ae", ae: "ae2"}
+      - targets: ["ae3:8087"]
+        labels: {agent_type: "ae", ae: "ae3"}
+
+  - job_name: "a2a-mcp-tools"
+    # MCP sidecar metrics — plain HTTP, internal Docker network only.
+    static_configs:
+      - targets: ["mcp-tools:8185"]
+        labels:
+          agent_type: "mcp_tools"
