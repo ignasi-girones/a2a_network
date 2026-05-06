@@ -36,12 +36,17 @@ cert_still_valid() {
 }
 
 # 1. Root CA
+# Python's ssl module (stricter than curl) requires the CA to carry a
+# keyUsage extension and a CA:TRUE basicConstraints — without them
+# verification fails with "CA cert does not include key usage extension".
 if ! cert_still_valid "$CERT_DIR/ca.pem" 30; then
   echo "Generating root CA (CN=$CA_CN)..."
   openssl genrsa -out "$CERT_DIR/ca.key" 4096 >/dev/null 2>&1
   chmod 600 "$CERT_DIR/ca.key"
   openssl req -x509 -new -nodes -key "$CERT_DIR/ca.key" -sha256 -days 3650 \
     -subj "/CN=$CA_CN/O=A2A Network/OU=TFG UPC FIB" \
+    -addext "basicConstraints=critical,CA:TRUE" \
+    -addext "keyUsage=critical,keyCertSign,cRLSign" \
     -out "$CERT_DIR/ca.pem"
 else
   echo "Root CA still valid, keeping existing $CERT_DIR/ca.pem"
