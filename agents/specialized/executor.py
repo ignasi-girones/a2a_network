@@ -13,22 +13,42 @@ from a2a.types import (
     TaskStatus,
     TaskStatusUpdateEvent,
 )
+import httpx
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
 from agents.specialized.agent_state import AgentState
 from common.config import settings
 from common.llm_provider import llm_complete
+from common.tls import httpx_tls_kwargs
 
 logger = logging.getLogger(__name__)
 
 MCP_URL = settings.mcp_url()
 
 
+def _mcp_http_client_factory(headers=None, timeout=None, auth=None) -> httpx.AsyncClient:
+    """Build the httpx client MCP uses, threading our mTLS config through.
+
+    In dev (TLS off) ``httpx_tls_kwargs`` returns ``{}`` and this is just
+    the default factory. In production it adds verify=ca + cert=(pem, key)
+    so the Caddy sidecar in front of mcp-tools accepts the connection.
+    """
+    return httpx.AsyncClient(
+        headers=headers,
+        timeout=timeout,
+        auth=auth,
+        **httpx_tls_kwargs(),
+    )
+
+
 async def _call_mcp_tool(tool: str, args: dict) -> str | None:
     """Call a tool on the MCP server. Returns result text or None on failure."""
     try:
-        async with streamablehttp_client(MCP_URL) as (read, write, _):
+        async with streamablehttp_client(
+            MCP_URL,
+            httpx_client_factory=_mcp_http_client_factory,
+        ) as (read, write, _):
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 result = await session.call_tool(tool, args)

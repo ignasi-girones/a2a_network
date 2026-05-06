@@ -1,0 +1,38 @@
+# Caddy sidecar for MCP tools — production TLS termination + mTLS gate.
+#
+# FastMCP doesn't accept ssl_keyfile/ssl_certfile, so this Caddy instance
+# runs as a separate Docker service `mcp-tls` and reverse-proxies to the
+# internal HTTP MCP server at mcp-tools:8086. Specialized agents call
+# `https://mcp-tls:8085/mcp` and Caddy:
+#
+#   1. terminates TLS using mcp-tls.pem / mcp-tls.key
+#   2. requires the caller to present a client cert signed by our CA
+#      (mTLS — same trust chain as every other agent-to-agent hop)
+#   3. proxies plaintext to the FastMCP listener on mcp-tools:8086
+#
+# auto_https off: we serve self-signed certs from /certs, no Let's Encrypt.
+
+{
+	auto_https off
+	# Use Caddy's debug logging during initial deployment; switch to INFO
+	# once the chain is proven.
+	log {
+		output stdout
+		level INFO
+	}
+}
+
+:8085 {
+	tls /certs/mcp-tls.pem /certs/mcp-tls.key {
+		client_auth {
+			mode require_and_verify
+			trusted_ca_cert_file /certs/ca.pem
+		}
+	}
+
+	reverse_proxy mcp-tools:8086 {
+		# FastMCP uses streamable-http (chunked + SSE-like); turn off the
+		# response buffer so streamed events reach the agents in real time.
+		flush_interval -1
+	}
+}

@@ -41,7 +41,7 @@ services:
     image: caddy:2-alpine
     volumes:
       - ./certs:/certs:ro
-      - ./monitoring/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
     ports:
       - "8085:8085"
     networks:
@@ -50,7 +50,16 @@ services:
       cert-init:
         condition: service_completed_successfully
       mcp-tools:
-        condition: service_started
+        condition: service_healthy
+    healthcheck:
+      # Caddy validates the Caddyfile on `caddy validate`; we use it as a
+      # liveness probe so dependants only start once Caddy has accepted
+      # the config and is listening on :8085.
+      test: ["CMD", "caddy", "validate", "--config", "/etc/caddy/Caddyfile"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
     restart: unless-stopped
 
   # ── Backend agents: mount certs + enable TLS ────────────────────────────────
@@ -59,6 +68,8 @@ services:
     environment:
       MCP_PORT: "8086"   # internal-only; Caddy at :8085 fronts it externally
     ports: !reset []     # wipe the host port binding from base compose
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket,sys; s=socket.socket(); s.settimeout(2); s.connect(('localhost', 8086)); sys.exit(0)"]
     depends_on:
       cert-init:
         condition: service_completed_successfully
@@ -74,6 +85,8 @@ services:
     depends_on:
       cert-init:
         condition: service_completed_successfully
+      mcp-tls:
+        condition: service_healthy
 
   normalizer:
     volumes:
@@ -97,6 +110,8 @@ services:
     depends_on:
       cert-init:
         condition: service_completed_successfully
+      mcp-tls:
+        condition: service_healthy
 
   ae2:
     volumes:
@@ -109,6 +124,8 @@ services:
     depends_on:
       cert-init:
         condition: service_completed_successfully
+      mcp-tls:
+        condition: service_healthy
 
   ae3:
     volumes:
@@ -121,6 +138,8 @@ services:
     depends_on:
       cert-init:
         condition: service_completed_successfully
+      mcp-tls:
+        condition: service_healthy
 
   feedback:
     volumes:
