@@ -9,6 +9,7 @@ from a2a.server.tasks import InMemoryTaskStore
 from agents.normalizer.executor import NormalizerExecutor
 from common.a2a_helpers import build_agent_card, build_skill
 from common.config import settings
+from common.tls import uvicorn_tls_kwargs
 from common.registry_client import (
     agent_card_to_dict,
     deregister_self,
@@ -89,7 +90,12 @@ def main():
     install_telemetry(starlette_app, "normalizer")
 
     print(f"Normalizer Agent starting on {url}")
-    uvicorn.run(starlette_app, host="0.0.0.0", port=port)
+    uvicorn.run(
+        starlette_app,
+        host="0.0.0.0",
+        port=port,
+        **uvicorn_tls_kwargs("normalizer"),
+    )
 
 
 if __name__ == "__main__":

@@ -12,6 +12,8 @@ from a2a.types import (
     StreamResponse,
 )
 
+from common.tls import httpx_tls_kwargs
+
 
 def build_agent_card(
     name: str,
@@ -59,13 +61,22 @@ def build_skill(
     )
 
 
-async def create_a2a_client(base_url: str) -> tuple:
+async def create_a2a_client(base_url: str, *, client_service: str | None = None) -> tuple:
     """Create an A2A client for a remote agent.
+
+    When TLS is enabled, the underlying httpx client presents the caller's
+    own client cert so the remote agent (running with mTLS) accepts the
+    connection. ``client_service`` selects which cert to load; defaults to
+    the value of ``TLS_SERVICE_NAME``/``SELF_HOST`` resolved by ``common.tls``.
 
     Returns:
         Tuple of (client, agent_card)
     """
-    http_client = httpx.AsyncClient(base_url=base_url, timeout=120.0)
+    http_client = httpx.AsyncClient(
+        base_url=base_url,
+        timeout=120.0,
+        **httpx_tls_kwargs(client_service),
+    )
     resolver = A2ACardResolver(httpx_client=http_client, base_url=base_url)
     card = await resolver.get_agent_card()
 

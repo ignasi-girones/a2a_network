@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
 from dataclasses import dataclass, field
 
@@ -42,7 +43,7 @@ class _SpawnedWorker:
     url: str = field(init=False)
 
     def __post_init__(self) -> None:
-        self.url = f"http://localhost:{self.port}"
+        self.url = f"{settings.url_scheme}://localhost:{self.port}"
 
 
 class WorkerSpawner:
@@ -85,6 +86,14 @@ class WorkerSpawner:
             port = self._allocate_port()
 
         logger.info("Spawning worker %s on port %d", agent_id, port)
+        # In production (TLS), each spawned worker needs to load a cert that
+        # matches its hostname. Override TLS_SERVICE_NAME so the subprocess
+        # picks up <agent_id>.pem from the cert dir. Production deployments
+        # must therefore include certs for any dynamically-spawned agent_ids.
+        # In dev (TLS off), this env var is a no-op.
+        env = os.environ.copy()
+        if settings.tls_enabled:
+            env["TLS_SERVICE_NAME"] = agent_id
         process = await asyncio.create_subprocess_exec(
             sys.executable,
             "-m",
@@ -93,6 +102,7 @@ class WorkerSpawner:
             str(port),
             "--agent-id",
             agent_id,
+            env=env,
         )
 
         # Poll the registry until the new worker appears, or the process exits,

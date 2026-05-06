@@ -12,6 +12,7 @@ from agents.orchestrator.models_routes import models_routes
 from agents.orchestrator.planner_routes import planner_routes
 from common.a2a_helpers import build_agent_card, build_skill
 from common.config import settings
+from common.tls import uvicorn_tls_kwargs
 
 logging.basicConfig(level=logging.INFO)
 
@@ -88,7 +89,12 @@ def main():
     install_telemetry(starlette_app, "orchestrator")
 
     print(f"Orchestrator Agent starting on {url}")
-    uvicorn.run(starlette_app, host="0.0.0.0", port=port)
+    uvicorn.run(
+        starlette_app,
+        host="0.0.0.0",
+        port=port,
+        **uvicorn_tls_kwargs("orchestrator"),
+    )
 
 
 if __name__ == "__main__":

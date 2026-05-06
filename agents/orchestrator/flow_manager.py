@@ -20,6 +20,7 @@ import httpx
 from common.a2a_helpers import create_a2a_client, send_and_get_text
 from common.config import settings
 from common.llm_provider import llm_complete
+from common.tls import httpx_tls_kwargs
 from common.models import (
     AgentRoleConfig,
     DebateRound,
@@ -283,7 +284,7 @@ class FlowManager:
 
     async def _configure_agents(self, decision: RoleDecision) -> None:
         """Configure both AE agents via internal API (not A2A)."""
-        async with httpx.AsyncClient() as http:
+        async with httpx.AsyncClient(**httpx_tls_kwargs("orchestrator")) as http:
             ae1_url = f"{settings.agent_url(settings.ae1_port)}/internal/configure"
             ae2_url = f"{settings.agent_url(settings.ae2_port)}/internal/configure"
 

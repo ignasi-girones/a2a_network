@@ -14,6 +14,7 @@ from typing import Any, Iterable
 import httpx
 
 from common.config import settings
+from common.tls import httpx_tls_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +67,7 @@ async def register_self_with_orchestrator(
     registry_url = f"{settings.orchestrator_url()}/registry/register"
     payload = {"agent_id": agent_id, "url": url, "card": card}
 
-    async with httpx.AsyncClient(timeout=5.0) as http:
+    async with httpx.AsyncClient(timeout=5.0, **httpx_tls_kwargs(agent_id)) as http:
         for attempt in range(1, max_retries + 1):
             try:
                 response = await http.post(registry_url, json=payload)
@@ -103,7 +104,7 @@ async def deregister_self(agent_id: str) -> None:
     """Best-effort deregistration on shutdown."""
     registry_url = f"{settings.orchestrator_url()}/registry/{agent_id}"
     try:
-        async with httpx.AsyncClient(timeout=2.0) as http:
+        async with httpx.AsyncClient(timeout=2.0, **httpx_tls_kwargs(agent_id)) as http:
             await http.delete(registry_url)
             logger.info("Deregistered %s from registry", agent_id)
     except Exception as e:
