@@ -98,6 +98,13 @@ class Settings(BaseSettings):
     tls_enabled: bool = False
     tls_cert_dir: str = "/certs"
 
+    # Debate persistence. SQLite file written by the orchestrator only — every
+    # SSE event of every debate gets persisted there so the frontend can
+    # replay them on F5 or jump back to a past debate from the sidebar.
+    # Default points at the host-mounted /data volume in compose; in local
+    # dev (start.bat) override DEBATES_DB_PATH to e.g. "logs/debates.db".
+    debates_db_path: str = "/data/debates.db"
+
     # CORS origins for the frontend. Comma-separated list in env.
     # Defaults cover common local dev ports; set explicitly in production.
     cors_origins: str = "http://localhost:3000,http://localhost:5173"

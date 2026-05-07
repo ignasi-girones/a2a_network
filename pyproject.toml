@@ -18,6 +18,7 @@ dependencies = [
     "pydantic>=2.0",
     "pydantic-settings>=2.0",
     "sse-starlette>=2.0",
+    "aiosqlite>=0.19",
     "packaging",
 ]
 
