@@ -1,4 +1,5 @@
 import logging
+from contextlib import asynccontextmanager
 
 import uvicorn
 from a2a.server.apps import A2AStarletteApplication
@@ -7,6 +8,8 @@ from a2a.server.tasks import InMemoryTaskStore
 from starlette.middleware.cors import CORSMiddleware
 
 from agents.orchestrator.agent_registry import registry_routes
+from agents.orchestrator.debate_routes import debate_routes
+from agents.orchestrator.debate_store import DebateStore
 from agents.orchestrator.executor import OrchestratorExecutor
 from agents.orchestrator.models_routes import models_routes
 from agents.orchestrator.planner_routes import planner_routes
@@ -56,7 +59,28 @@ def main():
         http_handler=handler,
     )
 
-    starlette_app = app.build()
+    # DebateStore — initialized in the lifespan hook so the connection is
+    # opened on the running event loop. Attached to app.state so the
+    # debate_routes handlers can pick it up via request.app.state.
+    debate_store = DebateStore(settings.debates_db_path)
+
+    @asynccontextmanager
+    async def lifespan(_app):
+        await debate_store.initialize()
+        # Mark any leftover running debates as failed — protects against
+        # orchestrator crashes that leave the partial unique index occupied.
+        n_orphans = await debate_store.cleanup_orphans()
+        if n_orphans:
+            logging.getLogger(__name__).warning(
+                "Cleaned up %d orphaned debate(s) at startup", n_orphans
+            )
+        try:
+            yield
+        finally:
+            await debate_store.close()
+
+    starlette_app = app.build(lifespan=lifespan)
+    starlette_app.state.debate_store = debate_store
 
     # Mount AgentRegistry routes (infrastructure, not A2A protocol).
     # Workers POST /registry/register on startup so the orchestrator can
@@ -74,6 +98,10 @@ def main():
     # Mount /models route so the frontend can render the actual LLM each
     # agent is configured to use (read from .env at startup).
     for route in models_routes:
+        starlette_app.routes.insert(0, route)
+
+    # Mount /debates routes — frontend's persistence + history layer.
+    for route in debate_routes:
         starlette_app.routes.insert(0, route)
 
     # CORS for the frontend. Configurable via CORS_ORIGINS env var (comma-sep).
