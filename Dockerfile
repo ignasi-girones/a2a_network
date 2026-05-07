@@ -59,6 +59,12 @@ WORKDIR /app
 COPY --chown=app:app common/ common/
 COPY --chown=app:app agents/ agents/
 
+# Pre-create /data so the orchestrator's named volume (debates_data) inherits
+# `app:app` ownership on first mount. Without this, Docker creates the volume
+# root-owned and the non-root process inside the container hits "unable to
+# open database file" when DebateStore tries to write debates.db.
+RUN mkdir -p /data && chown app:app /data
+
 USER app
 
 # Default to the orchestrator. docker-compose overrides `command:` per service.
