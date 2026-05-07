@@ -1,0 +1,280 @@
+"""HTTP routes for the debate persistence layer.
+
+These are NOT A2A protocol endpoints — they are propietary infrastructure
+that the *frontend* talks to. Other A2A network agents keep using the
+official ``POST /`` JSON-RPC entry point untouched.
+
+Exposed endpoints
+-----------------
+``POST /debates``
+    Body ``{"prompt": "..."}``. Creates a new debate row and kicks off
+    ``AgenticOrchestrator.run()`` in a background task. Returns the new
+    ``debate_id`` immediately, or **409 Conflict** if another debate is
+    already running (only one active at a time, by design).
+
+``GET /debates``
+    Paginated list ``{"debates": [...], "count": N}`` ordered most-recent
+    first. Powers the sidebar.
+
+``GET /debates/active``
+    The single ``running`` debate as a row, or ``null``. The frontend
+    calls this on mount to decide whether to auto-resume.
+
+``GET /debates/<id>``
+    One debate's metadata.
+
+``GET /debates/<id>/events?since=N``
+    All events with ``seq > N`` as a JSON array. One-shot; used by the
+    sidebar's "open old debate" path which doesn't need follow.
+
+``GET /debates/<id>/stream?since=N``
+    Server-Sent Events. First emits the catch-up (seq > N), then
+    tail-follows live events from the in-memory pub/sub. Closes after
+    the synthetic ``verdict``/``failed`` event for terminal debates,
+    or when the client disconnects.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+
+from sse_starlette.sse import EventSourceResponse
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+from starlette.routing import Route
+
+from agents.orchestrator.agent_registry import registry
+from agents.orchestrator.agentic_orchestrator import AgenticOrchestrator
+from agents.orchestrator.debate_store import DebateAlreadyActiveError, DebateStore
+from agents.orchestrator.persisting_progress import PersistingProgressCallback
+from agents.orchestrator.plan_executor import ProgressCallback
+from agents.orchestrator.worker_spawner import get_spawner
+from common.config import settings
+
+logger = logging.getLogger(__name__)
+
+
+# ── Helpers ────────────────────────────────────────────────────────────────
+
+
+def _store(request: Request) -> DebateStore:
+    """Pull the shared DebateStore out of app.state (set in __main__)."""
+    store = getattr(request.app.state, "debate_store", None)
+    if store is None:
+        raise RuntimeError(
+            "debate_store not attached to app.state — wire it in __main__"
+        )
+    return store
+
+
+def _build_progress_chain(
+    store: DebateStore, debate_id: str
+) -> ProgressCallback:
+    """Build the callback chain for a /debates POST background run.
+
+    Outer to inner:
+        PersistingProgressCallback ⊃ MetricsProgressCallback ⊃ NoOp
+
+    Unlike the A2A-path chain (``OrchestratorExecutor.execute``), there's
+    no SSE inner: the live stream goes out via the DebateStore pub/sub
+    that ``record_event`` already publishes to.
+    """
+    inner: ProgressCallback = ProgressCallback()  # no-op base
+    if settings.telemetry_enabled:
+        from common.telemetry.progress_metrics import MetricsProgressCallback
+        inner = MetricsProgressCallback(inner, agent_id="orchestrator")
+    return PersistingProgressCallback(inner, store, debate_id)
+
+
+async def _run_debate(store: DebateStore, debate_id: str, prompt: str) -> None:
+    """Background task: actually run the debate and mark its terminal state."""
+    progress = _build_progress_chain(store, debate_id)
+    try:
+        orchestrator = AgenticOrchestrator(
+            registry=registry,
+            spawner=get_spawner(),
+            progress=progress,
+        )
+        verdict = await orchestrator.run(prompt)
+        await store.mark_completed(debate_id, verdict)
+    except Exception as e:
+        logger.exception("Debate %s failed: %s", debate_id, e)
+        try:
+            await store.mark_failed(debate_id, f"{type(e).__name__}: {e}")
+        except Exception as mark_err:
+            logger.error(
+                "Could not mark debate %s as failed: %s", debate_id, mark_err
+            )
+
+
+# ── Routes ─────────────────────────────────────────────────────────────────
+
+
+async def create_debate(request: Request) -> JSONResponse:
+    """POST /debates — kicks off a new debate; rejects if one is already active."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(
+            {"error": "invalid_json", "message": "body must be JSON"},
+            status_code=400,
+        )
+
+    prompt = (body.get("prompt") or "").strip() if isinstance(body, dict) else ""
+    if not prompt:
+        return JSONResponse(
+            {"error": "missing_prompt", "message": "prompt is required"},
+            status_code=400,
+        )
+
+    store = _store(request)
+    try:
+        debate_id = await store.create_debate(prompt)
+    except DebateAlreadyActiveError:
+        active = await store.get_active()
+        return JSONResponse(
+            {
+                "error": "debate_active",
+                "message": "another debate is already running",
+                "active": active.to_dict() if active else None,
+            },
+            status_code=409,
+        )
+
+    # Fire and forget — the background task drives the orchestrator and writes
+    # the terminal status when done.
+    asyncio.create_task(_run_debate(store, debate_id, prompt))
+
+    return JSONResponse(
+        {"debate_id": debate_id, "status": "running"},
+        status_code=201,
+    )
+
+
+async def list_debates(request: Request) -> JSONResponse:
+    """GET /debates?limit=&offset= — paginated list, newest first."""
+    store = _store(request)
+    try:
+        limit = max(1, min(int(request.query_params.get("limit", "50")), 500))
+    except ValueError:
+        limit = 50
+    try:
+        offset = max(0, int(request.query_params.get("offset", "0")))
+    except ValueError:
+        offset = 0
+    rows = await store.list_debates(limit=limit, offset=offset)
+    return JSONResponse(
+        {"count": len(rows), "debates": [r.to_dict() for r in rows]}
+    )
+
+
+async def get_active(request: Request) -> JSONResponse:
+    """GET /debates/active — the running debate row, or null."""
+    store = _store(request)
+    row = await store.get_active()
+    return JSONResponse(row.to_dict() if row else None)
+
+
+async def get_debate(request: Request) -> JSONResponse:
+    """GET /debates/<id> — metadata."""
+    store = _store(request)
+    debate_id = request.path_params["debate_id"]
+    row = await store.get_debate(debate_id)
+    if row is None:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    return JSONResponse(row.to_dict())
+
+
+async def get_events(request: Request) -> JSONResponse:
+    """GET /debates/<id>/events?since=N — one-shot replay."""
+    store = _store(request)
+    debate_id = request.path_params["debate_id"]
+    if await store.get_debate(debate_id) is None:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    try:
+        since = int(request.query_params.get("since", "-1"))
+    except ValueError:
+        since = -1
+    events = await store.get_events(debate_id, since_seq=since)
+    return JSONResponse(
+        {"count": len(events), "events": [e.to_dict() for e in events]}
+    )
+
+
+async def stream_debate(request: Request) -> EventSourceResponse:
+    """GET /debates/<id>/stream?since=N — SSE catch-up + tail-follow.
+
+    Subscribes to the in-memory pub/sub *before* running the catch-up so
+    no events fired during the SELECT can slip through unnoticed. After
+    catch-up the loop forwards live events, deduping by seq.
+    """
+    store = _store(request)
+    debate_id = request.path_params["debate_id"]
+    debate = await store.get_debate(debate_id)
+    if debate is None:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+
+    try:
+        since = int(request.query_params.get("since", "-1"))
+    except ValueError:
+        since = -1
+
+    async def event_generator():
+        # Subscribe FIRST — race-free catch-up: any event written between
+        # the SELECT and the suscribe yield would otherwise be missed.
+        async with store.subscribe(debate_id) as queue:
+            # 1. Catch-up: every event with seq > since.
+            catch_up = await store.get_events(debate_id, since_seq=since)
+            last_seq = since
+            for ev in catch_up:
+                yield {"event": "progress", "data": json.dumps(ev.to_dict())}
+                last_seq = ev.seq
+
+            # If the debate is already terminal and the synthetic final
+            # event has been emitted, we're done.
+            current = await store.get_debate(debate_id)
+            if current is not None and current.status != "running":
+                # Make sure the verdict/failed synthetic event is in the
+                # catch-up; if it is, last_seq points at it.
+                terminal_events = await store.get_events(
+                    debate_id, since_seq=last_seq
+                )
+                for ev in terminal_events:
+                    yield {"event": "progress", "data": json.dumps(ev.to_dict())}
+                return
+
+            # 2. Tail-follow until terminal.
+            while True:
+                if await request.is_disconnected():
+                    return
+                try:
+                    payload = await asyncio.wait_for(queue.get(), timeout=15.0)
+                except asyncio.TimeoutError:
+                    # Heartbeat / disconnect probe — sse-starlette also has
+                    # ping but explicit re-check is cheap and keeps the
+                    # generator responsive on slow networks.
+                    continue
+                if payload["seq"] <= last_seq:
+                    # Duplicate (we already emitted it during catch-up).
+                    continue
+                yield {"event": "progress", "data": json.dumps(payload)}
+                last_seq = payload["seq"]
+                # Close after the synthetic terminal event.
+                if payload["stage"] in ("verdict", "failed"):
+                    return
+
+    return EventSourceResponse(event_generator(), ping=20)
+
+
+# ── Routes export ──────────────────────────────────────────────────────────
+
+debate_routes = [
+    Route("/debates", create_debate, methods=["POST"]),
+    Route("/debates", list_debates, methods=["GET"]),
+    Route("/debates/active", get_active, methods=["GET"]),
+    Route("/debates/{debate_id}", get_debate, methods=["GET"]),
+    Route("/debates/{debate_id}/events", get_events, methods=["GET"]),
+    Route("/debates/{debate_id}/stream", stream_debate, methods=["GET"]),
+]
