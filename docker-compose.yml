@@ -47,6 +47,12 @@ services:
       # CORS must include wherever the browser actually loads the app from.
       # On the VM the frontend is at nattech.fib.upc.edu:40536.
       CORS_ORIGINS: "${CORS_ORIGINS:-http://localhost:5173,http://localhost:8086,http://nattech.fib.upc.edu:40536}"
+      DEBATES_DB_PATH: "/data/debates.db"
+    volumes:
+      # Persistent debate history (events + verdicts). Survives orchestrator
+      # restarts; the lifespan hook marks any "running" rows as failed at
+      # startup so a previous crash doesn't permanently block new debates.
+      - debates_data:/data
     ports:
       - "8080:8080"
     depends_on:
@@ -228,3 +234,4 @@ networks:
 volumes:
   prometheus_data:
   grafana_data:
+  debates_data:
