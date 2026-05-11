@@ -158,17 +158,23 @@ export async function streamDebate(
     const decoder = new TextDecoder();
     let buffer = '';
 
+    // SSE spec allows three line endings — \n, \r\n, \r — and frames are
+    // separated by a blank line. sse-starlette emits \r\n\r\n between
+    // frames, so a naive split('\n\n') never finds the boundary and the
+    // buffer just grows until the stream closes. Use a regex that matches
+    // any combination so we stay robust to whatever the server picks.
+    const FRAME_SEP = /\r?\n\r?\n/;
+    const LINE_SEP = /\r?\n/;
+
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
 
-      // SSE frames are separated by blank lines; each line within a frame
-      // starts with "data:".
-      const frames = buffer.split('\n\n');
+      const frames = buffer.split(FRAME_SEP);
       buffer = frames.pop() || '';
       for (const frame of frames) {
-        for (const line of frame.split('\n')) {
+        for (const line of frame.split(LINE_SEP)) {
           if (!line.startsWith('data:')) continue;
           const payload = line.slice(5).trim();
           if (!payload) continue;
