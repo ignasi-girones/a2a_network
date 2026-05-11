@@ -29,6 +29,22 @@ ext_for() {
   esac
 }
 
+# UID:GID that will read each cert+key. Mode-600 keys mean only the owner
+# can read them, so the cert must be chowned to the exact uid the
+# corresponding container runs as:
+#   - agents (Dockerfile USER app)       → 1000
+#   - prom/prometheus default user nobody → 65534
+#   - grafana/grafana default user grafana → 472
+#   - root-running containers (frontend node, caddy, cert-init) read everything
+#     anyway, so 1000 is fine for those.
+owner_for() {
+  case "$1" in
+    prometheus) echo "65534:65534" ;;
+    grafana)    echo "472:472" ;;
+    *)          echo "1000:1000" ;;
+  esac
+}
+
 cert_still_valid() {
   cert="$1"
   min_days="$2"
@@ -58,7 +74,10 @@ for svc in $SERVICES; do
   key="$CERT_DIR/$svc.key"
 
   if cert_still_valid "$cert" 7; then
-    echo "$svc: cert valid >7d, skip"
+    echo "$svc: cert valid >7d, skip generation"
+    # Still re-apply ownership: rules can change between runs (e.g. when
+    # Prometheus/Grafana certs migrate from uid 1000 to 65534/472).
+    chown "$(owner_for "$svc")" "$cert" "$key" 2>/dev/null || true
     continue
   fi
 
@@ -92,14 +111,16 @@ EOF
     -extensions v3_req -extfile "$cnf" \
     -out "$cert" >/dev/null 2>&1
   chmod 644 "$cert"
+  chown "$(owner_for "$svc")" "$cert" "$key"
   rm -f "/tmp/$svc.csr" "$cnf"
 done
+
+# The CA public cert is needed by every container to validate peers, so it
+# stays world-readable. ca.key only ever leaves this script's hands (used
+# above to sign the per-service certs), so we leave it owned by whoever
+# runs cert-init (root) with mode 600.
+chmod 644 "$CERT_DIR/ca.pem"
 
 echo ""
 echo "All certs ready in $CERT_DIR:"
 ls -la "$CERT_DIR" | awk '/\.(pem|key)$/ {print "  " $NF}'
-
-# The agent containers run as uid 1000 (USER app in the Dockerfile). Hand
-# every cert+key over to that uid so the non-root processes can read their
-# own private keys (mode 600 → readable only by owner).
-chown -R 1000:1000 "$CERT_DIR"
