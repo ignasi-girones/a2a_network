@@ -57,16 +57,6 @@ function setDebateIdInURL(id: string | null): void {
 
 function App() {
   const [state, setState] = useState<ExtendedState>(INITIAL_STATE);
-
-  // DIAGNOSTIC: every render bumps a counter so we can correlate with
-  // [streamDebate] EVENT logs. If we see EVENTs but no [App render]
-  // entries between them, React is dropping updates. If we see renders
-  // but the user reports stale UI, the issue is downstream in a child.
-  const renderCount = useRef(0);
-  renderCount.current += 1;
-  console.log(
-    `[App render] #${renderCount.current} events=${state.events.length} status=${state.status}`,
-  );
   const [debates, setDebates] = useState<DebateSummary[]>([]);
   const [selectedDebateId, setSelectedDebateId] = useState<string | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);

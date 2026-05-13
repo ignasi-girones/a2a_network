@@ -165,31 +165,30 @@ export function streamDebate(
       resolve();
     };
 
-    const t0 = performance.now();
-    console.log('[streamDebate] OPEN', { id, since, t: 0 });
-
-    es.onmessage = (msg) => {
+    // The orchestrator emits SSE frames with `event: progress`. EventSource
+    // dispatches named-event types to specific listeners — `onmessage` only
+    // catches *unnamed* frames, so we attach to "progress" explicitly.
+    const handle = (msg: MessageEvent) => {
       const payload = msg.data;
       if (!payload) return;
       try {
         const parsed = JSON.parse(payload) as PersistedEvent;
         eventCount += 1;
-        const dt = (performance.now() - t0).toFixed(0);
-        console.log(`[streamDebate] EVENT #${eventCount} t+${dt}ms`, parsed.stage, 'seq', parsed.seq);
         onEvent(parsed);
         // The orchestrator closes the stream right after the terminal
         // event, which surfaces as an `error` here — but in some browsers
         // a clean server close arrives as readyState=CLOSED without an
         // error event. Detect it here so we resolve promptly.
         if (parsed.stage === 'verdict' || parsed.stage === 'failed') {
-          // Give the server a tick to flush its close frame, then close
-          // our side so the Promise resolves and callers can clean up.
           setTimeout(close, 0);
         }
       } catch {
         // ignore malformed frames — heartbeats etc.
       }
     };
+
+    es.addEventListener('progress', handle);
+    es.onmessage = handle; // fallback for any unnamed frames
 
     es.onerror = () => {
       // EventSource fires `error` both for transient blips and for the
