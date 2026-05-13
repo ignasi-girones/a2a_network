@@ -165,12 +165,17 @@ export function streamDebate(
       resolve();
     };
 
+    const t0 = performance.now();
+    console.log('[streamDebate] OPEN', { id, since, t: 0 });
+
     es.onmessage = (msg) => {
       const payload = msg.data;
       if (!payload) return;
       try {
         const parsed = JSON.parse(payload) as PersistedEvent;
         eventCount += 1;
+        const dt = (performance.now() - t0).toFixed(0);
+        console.log(`[streamDebate] EVENT #${eventCount} t+${dt}ms`, parsed.stage, 'seq', parsed.seq);
         onEvent(parsed);
         // The orchestrator closes the stream right after the terminal
         // event, which surfaces as an `error` here — but in some browsers
