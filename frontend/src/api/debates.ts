@@ -136,58 +136,78 @@ export async function createDebate(prompt: string): Promise<{
 /**
  * GET /debates/<id>/stream — SSE catch-up + tail-follow.
  *
- * Returns when the stream closes (terminal event or disconnect). Errors
- * raised by the network are reported via ``onError``.
+ * Uses the native EventSource API. fetch+reader.read() also works in
+ * principle, but the browser sometimes coalesces small chunks before
+ * yielding them to userland; EventSource dispatches an `onmessage` event
+ * per SSE frame, which gives React a chance to commit each setState
+ * between events instead of batching them all into one render at the end.
+ *
+ * Resolves when the stream closes (terminal event, server disconnect, or
+ * the AbortSignal fires).
  */
-export async function streamDebate(
+export function streamDebate(
   id: string,
   since: number,
   onEvent: (e: PersistedEvent) => void,
   onError: (msg: string) => void,
   signal?: AbortSignal,
 ): Promise<void> {
-  try {
-    const res = await fetch(`${API}/debates/${id}/stream?since=${since}`, {
-      signal,
-      headers: { Accept: 'text/event-stream' },
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+  return new Promise((resolve) => {
+    const url = `${API}/debates/${id}/stream?since=${since}`;
+    const es = new EventSource(url);
+    let eventCount = 0;
+    let closed = false;
 
-    const reader = res.body?.getReader();
-    if (!reader) throw new Error('No readable stream');
-    const decoder = new TextDecoder();
-    let buffer = '';
+    const close = () => {
+      if (closed) return;
+      closed = true;
+      es.close();
+      resolve();
+    };
 
-    // SSE spec allows three line endings — \n, \r\n, \r — and frames are
-    // separated by a blank line. sse-starlette emits \r\n\r\n between
-    // frames, so a naive split('\n\n') never finds the boundary and the
-    // buffer just grows until the stream closes. Use a regex that matches
-    // any combination so we stay robust to whatever the server picks.
-    const FRAME_SEP = /\r?\n\r?\n/;
-    const LINE_SEP = /\r?\n/;
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-
-      const frames = buffer.split(FRAME_SEP);
-      buffer = frames.pop() || '';
-      for (const frame of frames) {
-        for (const line of frame.split(LINE_SEP)) {
-          if (!line.startsWith('data:')) continue;
-          const payload = line.slice(5).trim();
-          if (!payload) continue;
-          try {
-            onEvent(JSON.parse(payload) as PersistedEvent);
-          } catch {
-            // ignore malformed frames — heartbeats etc.
-          }
+    es.onmessage = (msg) => {
+      const payload = msg.data;
+      if (!payload) return;
+      try {
+        const parsed = JSON.parse(payload) as PersistedEvent;
+        eventCount += 1;
+        onEvent(parsed);
+        // The orchestrator closes the stream right after the terminal
+        // event, which surfaces as an `error` here — but in some browsers
+        // a clean server close arrives as readyState=CLOSED without an
+        // error event. Detect it here so we resolve promptly.
+        if (parsed.stage === 'verdict' || parsed.stage === 'failed') {
+          // Give the server a tick to flush its close frame, then close
+          // our side so the Promise resolves and callers can clean up.
+          setTimeout(close, 0);
         }
+      } catch {
+        // ignore malformed frames — heartbeats etc.
       }
+    };
+
+    es.onerror = () => {
+      // EventSource fires `error` both for transient blips and for the
+      // final close. readyState distinguishes them:
+      //   - CONNECTING (0): browser will retry → leave it
+      //   - OPEN       (1): transient, will recover
+      //   - CLOSED     (2): terminal, we're done
+      if (es.readyState === EventSource.CLOSED) {
+        close();
+      } else if (eventCount === 0) {
+        // No events yet AND we got an error → likely the initial connect
+        // failed. Surface it so the UI can show something useful.
+        onError('Stream connection failed');
+        close();
+      }
+    };
+
+    if (signal) {
+      if (signal.aborted) {
+        close();
+        return;
+      }
+      signal.addEventListener('abort', close, { once: true });
     }
-  } catch (error) {
-    if ((error as Error).name === 'AbortError') return;
-    onError(error instanceof Error ? error.message : String(error));
-  }
+  });
 }

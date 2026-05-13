@@ -24,17 +24,14 @@ scrape_configs:
         labels:
           agent_type: "feedback"
 
-  - job_name: "a2a-role-workers"
+  - job_name: "a2a-debate-agents"
     static_configs:
-      - targets:
-          - "analyst:8082"
-          - "seeker:8083"
-          - "devils-advocate:8087"
-          - "synthesizer:8088"
-          - "empiricist:8089"
-          - "pragmatist:8090"
-        labels:
-          agent_type: "role_worker"
+      - targets: ["ae1:8082"]
+        labels: {agent_type: "ae", ae: "ae1"}
+      - targets: ["ae2:8083"]
+        labels: {agent_type: "ae", ae: "ae2"}
+      - targets: ["ae3:8087"]
+        labels: {agent_type: "ae", ae: "ae3"}
 
   - job_name: "a2a-mcp-tools"
     static_configs:

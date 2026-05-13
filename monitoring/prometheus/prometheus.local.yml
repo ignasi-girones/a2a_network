@@ -25,17 +25,14 @@ scrape_configs:
         labels:
           agent_type: "feedback"
 
-  - job_name: "a2a-role-workers"
+  - job_name: "a2a-debate-agents"
     static_configs:
-      - targets:
-          - "host.docker.internal:8082"
-          - "host.docker.internal:8083"
-          - "host.docker.internal:8087"
-          - "host.docker.internal:8088"
-          - "host.docker.internal:8089"
-          - "host.docker.internal:8090"
-        labels:
-          agent_type: "role_worker"
+      - targets: ["host.docker.internal:8082"]
+        labels: {agent_type: "ae", ae: "ae1"}
+      - targets: ["host.docker.internal:8083"]
+        labels: {agent_type: "ae", ae: "ae2"}
+      - targets: ["host.docker.internal:8087"]
+        labels: {agent_type: "ae", ae: "ae3"}
 
   - job_name: "a2a-mcp-tools"
     static_configs:
