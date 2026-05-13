@@ -26,6 +26,16 @@
 
 name: a2a-network
 
+# Cap json-file log size per container so the VM disk can't fill up
+# from a runaway service. 10MB × 3 files = 30MB per container worst case.
+# Promtail still tails the active file, so log shipment to Loki is
+# unaffected by rotation.
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 x-backend-base: &backend-base
   build:
     context: .
@@ -33,6 +43,7 @@ x-backend-base: &backend-base
   image: a2a-network-backend:latest
   env_file: .env
   restart: unless-stopped
+  logging: *default-logging
   networks:
     - a2a_net
 
@@ -186,6 +197,7 @@ services:
       dockerfile: Dockerfile.frontend
     image: a2a-network-frontend:latest
     restart: unless-stopped
+    logging: *default-logging
     ports:
       - "8086:8086"
     environment:
@@ -209,6 +221,45 @@ services:
     networks:
       - a2a_net
     restart: unless-stopped
+    logging: *default-logging
+
+  # Loki — log aggregator. Internal-only (no host port published); Grafana
+  # reaches it as http://loki:3100 over the a2a_net network.
+  loki:
+    image: grafana/loki:3.0.0
+    volumes:
+      - ./monitoring/loki/loki-config.yml:/etc/loki/local-config.yaml:ro
+      - loki_data:/loki
+    command: -config.file=/etc/loki/local-config.yaml
+    networks:
+      - a2a_net
+    restart: unless-stopped
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3100/ready || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+
+  # Promtail — discovers and tails Docker container logs into Loki.
+  # Needs read access to the Docker socket (to list containers) and to
+  # /var/lib/docker/containers (to read json-file driver output).
+  promtail:
+    image: grafana/promtail:3.0.0
+    volumes:
+      - ./monitoring/promtail/promtail-config.yml:/etc/promtail/config.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - promtail_data:/var/lib/promtail
+    command: -config.file=/etc/promtail/config.yml
+    depends_on:
+      loki:
+        condition: service_healthy
+    networks:
+      - a2a_net
+    restart: unless-stopped
+    logging: *default-logging
 
   grafana:
     image: grafana/grafana:11.1.0
@@ -223,9 +274,11 @@ services:
       GF_USERS_ALLOW_SIGN_UP: "false"
     depends_on:
       - prometheus
+      - loki
     networks:
       - a2a_net
     restart: unless-stopped
+    logging: *default-logging
 
 networks:
   a2a_net:
@@ -235,3 +288,5 @@ volumes:
   prometheus_data:
   grafana_data:
   debates_data:
+  loki_data:
+  promtail_data:

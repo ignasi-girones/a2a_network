@@ -1,0 +1,169 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "templating": {
+    "list": [
+      {
+        "current": { "selected": true, "text": ["All"], "value": ["$__all"] },
+        "datasource": { "type": "loki", "uid": "loki" },
+        "definition": "label_values({job=\"docker\"}, service)",
+        "includeAll": true,
+        "multi": true,
+        "name": "service",
+        "query": { "label": "service", "stream": "{job=\"docker\"}", "type": 1 },
+        "refresh": 2,
+        "type": "query",
+        "label": "Servicio"
+      },
+      {
+        "current": { "selected": true, "text": ["All"], "value": ["$__all"] },
+        "datasource": { "type": "loki", "uid": "loki" },
+        "definition": "label_values({job=\"docker\"}, debate_id)",
+        "includeAll": true,
+        "multi": true,
+        "name": "debate_id",
+        "query": { "label": "debate_id", "stream": "{job=\"docker\"}", "type": 1 },
+        "refresh": 2,
+        "type": "query",
+        "label": "Debate"
+      },
+      {
+        "current": { "selected": false, "text": "", "value": "" },
+        "name": "query",
+        "type": "textbox",
+        "label": "Búsqueda libre",
+        "description": "Texto a filtrar dentro de las líneas (case-insensitive)",
+        "query": ""
+      }
+    ]
+  },
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 100,
+      "title": "Volumen y errores",
+      "type": "row"
+    },
+
+    {
+      "datasource": { "type": "loki", "uid": "loki" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "logs/sec",
+          "custom": { "drawStyle": "line", "lineInterpolation": "smooth", "fillOpacity": 15, "spanNulls": true }
+        }
+      },
+      "gridPos": { "h": 8, "w": 16, "x": 0, "y": 1 },
+      "id": 1,
+      "title": "Volumen de logs por servicio",
+      "description": "Tasa de líneas/segundo emitidas por cada contenedor, ventana 1m. Picos = actividad.",
+      "targets": [{
+        "expr": "sum by (service) (rate({job=\"docker\", service=~\"$service\", debate_id=~\"$debate_id\"}[1m]))",
+        "legendFormat": "{{service}}",
+        "datasource": { "type": "loki", "uid": "loki" }
+      }],
+      "type": "timeseries",
+      "options": {
+        "tooltip": { "mode": "multi", "sort": "desc" },
+        "legend": { "displayMode": "list", "placement": "right" }
+      }
+    },
+
+    {
+      "datasource": { "type": "loki", "uid": "loki" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "thresholds" },
+          "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 1 }, { "color": "red", "value": 10 }] },
+          "noValue": "0"
+        }
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 1 },
+      "id": 2,
+      "title": "Errores por servicio (5 min)",
+      "description": "Líneas que contienen 'error', 'exception' o 'traceback' (case-insensitive) en los últimos 5 minutos.",
+      "targets": [{
+        "expr": "sum by (service) (count_over_time({job=\"docker\", service=~\"$service\", debate_id=~\"$debate_id\"} |~ \"(?i)error|exception|traceback\"[5m]))",
+        "legendFormat": "{{service}}",
+        "datasource": { "type": "loki", "uid": "loki" }
+      }],
+      "type": "stat",
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "textMode": "value_and_name"
+      }
+    },
+
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 },
+      "id": 101,
+      "title": "Líneas",
+      "type": "row"
+    },
+
+    {
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 14, "w": 12, "x": 0, "y": 10 },
+      "id": 3,
+      "title": "Errores recientes",
+      "description": "Últimas líneas que contienen 'error', 'exception' o 'traceback'.",
+      "targets": [{
+        "expr": "{job=\"docker\", service=~\"$service\", debate_id=~\"$debate_id\"} |~ \"(?i)error|exception|traceback\"",
+        "datasource": { "type": "loki", "uid": "loki" }
+      }],
+      "type": "logs",
+      "options": {
+        "showTime": true,
+        "showLabels": false,
+        "showCommonLabels": false,
+        "wrapLogMessage": true,
+        "prettifyLogMessage": false,
+        "enableLogDetails": true,
+        "sortOrder": "Descending",
+        "dedupStrategy": "none"
+      }
+    },
+
+    {
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 14, "w": 12, "x": 12, "y": 10 },
+      "id": 4,
+      "title": "Búsqueda libre",
+      "description": "Filtra por la variable $query si está rellena; si no, muestra todo. Útil para 'openai', 'aporia', 'verdict', etc.",
+      "targets": [{
+        "expr": "{job=\"docker\", service=~\"$service\", debate_id=~\"$debate_id\"} |~ `(?i)${query:raw}`",
+        "datasource": { "type": "loki", "uid": "loki" }
+      }],
+      "type": "logs",
+      "options": {
+        "showTime": true,
+        "showLabels": false,
+        "showCommonLabels": false,
+        "wrapLogMessage": true,
+        "prettifyLogMessage": false,
+        "enableLogDetails": true,
+        "sortOrder": "Descending",
+        "dedupStrategy": "none"
+      }
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": ["a2a", "logs"],
+  "time": { "from": "now-15m", "to": "now" },
+  "timepicker": {},
+  "timezone": "",
+  "title": "A2A Logs",
+  "uid": "a2a-logs",
+  "version": 1,
+  "weekStart": ""
+}

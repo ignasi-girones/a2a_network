@@ -7,5 +7,13 @@ Fully decoupled from agent business logic:
 """
 
 from common.telemetry.install import install_telemetry
+from common.telemetry.log_context import (
+    current_debate_id,
+    install_debate_id_filter,
+)
 
-__all__ = ["install_telemetry"]
+__all__ = [
+    "install_telemetry",
+    "install_debate_id_filter",
+    "current_debate_id",
+]

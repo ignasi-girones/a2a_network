@@ -52,6 +52,7 @@ from agents.orchestrator.persisting_progress import PersistingProgressCallback
 from agents.orchestrator.plan_executor import ProgressCallback
 from agents.orchestrator.worker_spawner import get_spawner
 from common.config import settings
+from common.telemetry.log_context import current_debate_id
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +91,10 @@ def _build_progress_chain(
 
 async def _run_debate(store: DebateStore, debate_id: str, prompt: str) -> None:
     """Background task: actually run the debate and mark its terminal state."""
+    # Bind the ContextVar so every log line emitted within this task
+    # (and any child task it spawns via asyncio.create_task / executor)
+    # gets the [debate=<id>] prefix the logging filter prepends.
+    current_debate_id.set(debate_id)
     progress = _build_progress_chain(store, debate_id)
     try:
         orchestrator = AgenticOrchestrator(

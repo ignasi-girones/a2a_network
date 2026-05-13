@@ -364,6 +364,37 @@
       }],
       "type": "bargauge",
       "options": { "orientation": "horizontal", "displayMode": "gradient", "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+
+    {
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "scaleDistribution": { "type": "linear" }, "hideFrom": { "tooltip": false, "viz": false, "legend": false } }
+        }
+      },
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 63 },
+      "id": 22,
+      "title": "Distribución de duración de deliberaciones",
+      "description": "Heatmap de los buckets del histograma a2a_deliberation_duration_seconds. Cada celda = nº de debates que duraron entre los límites del bucket. Si la masa se acumula a la derecha, las deliberaciones se están alargando — revisar MAX_ROUNDS o el criterio de consenso.",
+      "targets": [{
+        "expr": "sum by (le) (rate(a2a_deliberation_duration_seconds_bucket{agent_id=~\"$agent_id\"}[10m]))",
+        "legendFormat": "{{le}}",
+        "format": "heatmap"
+      }],
+      "type": "heatmap",
+      "options": {
+        "calculate": false,
+        "cellGap": 2,
+        "color": { "exponent": 0.5, "fill": "dark-orange", "min": 0, "mode": "scheme", "reverse": false, "scale": "exponential", "scheme": "Spectral", "steps": 64 },
+        "filterValues": { "le": 1e-9 },
+        "legend": { "show": true },
+        "rowsFrame": { "layout": "auto" },
+        "showValue": "never",
+        "tooltip": { "show": true, "yHistogram": false },
+        "yAxis": { "axisPlacement": "left", "reverse": false, "unit": "s" }
+      }
     }
 
   ],
@@ -374,5 +405,5 @@
   "timezone": "browser",
   "title": "A2A Debate Network — Overview",
   "uid": "a2a-overview",
-  "version": 4
+  "version": 5
 }

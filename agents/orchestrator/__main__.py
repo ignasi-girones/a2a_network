@@ -19,6 +19,11 @@ from common.tls import uvicorn_tls_kwargs
 
 logging.basicConfig(level=logging.INFO)
 
+# Prefix log lines with [debate=<id>] when one is active so Promtail can
+# extract the label and Grafana can filter logs by debate.
+from common.telemetry.log_context import install_debate_id_filter
+install_debate_id_filter()
+
 
 def main():
     port = settings.orchestrator_port

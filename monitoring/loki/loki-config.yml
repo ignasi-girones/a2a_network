@@ -1,0 +1,68 @@
+# Loki — single-binary, filesystem-backed log store for the A2A network.
+#
+# Sizing: this is a TFG / demo deployment with ~10 containers on one VM.
+# Volumes are tiny (KB/s), so the filesystem TSDB shipper is plenty —
+# no need for object storage, no need for multiple replicas.
+#
+# Retention is 14 days (336h). The compactor enforces this by deleting
+# old chunks. The reject window for incoming samples is 168h (7 days)
+# so we don't accept stale logs older than half the retention.
+#
+# auth_enabled=false because Loki sits on the internal a2a_net Docker
+# network — no external port exposed, only Grafana scrapes it.
+
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  grpc_listen_port: 9095
+  log_level: warn
+
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: /loki
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+
+schema_config:
+  configs:
+    - from: 2024-01-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+storage_config:
+  tsdb_shipper:
+    active_index_directory: /loki/tsdb-index
+    cache_location: /loki/tsdb-cache
+  filesystem:
+    directory: /loki/chunks
+
+limits_config:
+  retention_period: 336h
+  reject_old_samples: true
+  reject_old_samples_max_age: 168h
+  allow_structured_metadata: true
+  volume_enabled: true
+
+compactor:
+  working_directory: /loki/compactor
+  retention_enabled: true
+  retention_delete_delay: 2h
+  retention_delete_worker_count: 150
+  delete_request_store: filesystem
+
+ruler:
+  alertmanager_url: ""
+
+analytics:
+  reporting_enabled: false

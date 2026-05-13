@@ -1,0 +1,72 @@
+# Promtail — discovers Docker containers and ships their logs to Loki.
+#
+# Discovery model: docker_sd_configs talks to the Docker socket, lists
+# every container running on this host, and tail-follows each one's
+# json-file log via /var/lib/docker/containers/<id>/<id>-json.log.
+# When a new container starts (e.g. after `docker compose up`), Promtail
+# picks it up within `refresh_interval`.
+#
+# Filter: we restrict discovery to containers in the `a2a-network`
+# compose project so unrelated containers on the host (if any) don't
+# pollute Loki. The compose project name comes from the `name:` field
+# at the top of docker-compose.yml.
+#
+# Labels exposed to Loki:
+#   - service     — compose service name (orchestrator, ae1, prometheus, …)
+#   - container   — full container name
+#   - debate_id   — extracted from log lines matching [debate=<id>] (C1)
+#
+# debate_id is the killer label: every line written inside the
+# orchestrator/agents while a debate is active carries the [debate=<id>]
+# prefix (see common/telemetry — logging.Filter reads a contextvar).
+# In the logs dashboard, the `debate_id` variable lets the user pivot
+# instantly from a sidebar entry to the exact lines that produced it.
+
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+  log_level: warn
+
+positions:
+  filename: /var/lib/promtail/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: docker
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 10s
+        filters:
+          - name: label
+            values: ["com.docker.compose.project=a2a-network"]
+    relabel_configs:
+      - source_labels: ["__meta_docker_container_name"]
+        regex: "/(.*)"
+        target_label: "container"
+      - source_labels: ["__meta_docker_container_label_com_docker_compose_service"]
+        target_label: "service"
+      - target_label: "job"
+        replacement: "docker"
+    pipeline_stages:
+      # Docker json-file driver wraps each line as JSON: {"log":"...","stream":"stdout","time":"..."}.
+      # Parse it so downstream stages see just the message body.
+      - json:
+          expressions:
+            output: log
+            stream: stream
+            timestamp: time
+      - timestamp:
+          source: timestamp
+          format: RFC3339Nano
+      - output:
+          source: output
+      # Extract the debate_id prefix injected by common/telemetry's
+      # logging filter. The regex is permissive (alphanumerics + dashes
+      # + underscores) so it matches the orchestrator's UUID4-ish ids
+      # without locking us into a specific format.
+      - regex:
+          expression: '\[debate=(?P<debate_id>[a-zA-Z0-9_-]+)\]'
+      - labels:
+          debate_id:
