@@ -23,16 +23,16 @@ import {
 const PLAN: TaskPlan = {
   goal: '¿Vale la pena la IA?',
   subtasks: [
-    { id: 't1', description: 'normalize', required_skill: 'normalize_input', depends_on: [] },
+    { id: 't1', description: 'normalize', required_skill: 'normalize_input', depends_on: [], perspective: null },
     { id: 't2', description: 'pro', required_skill: 'debate', depends_on: ['t1'], perspective: 'ae1: pro' },
     { id: 't3', description: 'con', required_skill: 'debate', depends_on: ['t1'], perspective: 'ae2: con' },
-    { id: 't4', description: 'verdict', required_skill: 'format_verdict', depends_on: ['t2', 't3'] },
+    { id: 't4', description: 'verdict', required_skill: 'format_verdict', depends_on: ['t2', 't3'], perspective: null },
   ],
   max_workers: 3,
 };
 
 const EVENTS: DebateEvent[] = [
-  { stage: 'discover', message: 'Workers...', data: { count: 4 } },
+  { stage: 'discover', message: 'Workers...', data: {} },
   { stage: 'plan', message: 'Generando plan...', data: {} },
   { stage: 'plan_ready', message: 'Plan listo', data: { plan: PLAN } },
   { stage: 'subtask_dispatch', message: 't1', data: { subtask_id: 't1', worker_id: 'normalizer' } },
@@ -59,7 +59,7 @@ const EVENTS: DebateEvent[] = [
       round: 0,
       agreement_score: 0.4,
       reason: 'dispersion=0.6',
-      components: { dispersion: 0.4, similarity: 0.6 },
+      components: { dispersion: 0.4, pairwise_similarity: 0.6 },
     },
   },
   { stage: 'subtask_dispatch', message: 't4', data: { subtask_id: 't4', worker_id: 'feedback' } },
@@ -102,14 +102,14 @@ describe('reduceDebateEvent', () => {
     const initialPlan: TaskPlan = {
       goal: 'g',
       subtasks: [
-        { id: 't1', description: '', required_skill: 's', depends_on: [] },
+        { id: 't1', description: '', required_skill: 's', depends_on: [], perspective: null },
       ],
       max_workers: 1,
     };
     const extendedPlan: TaskPlan = {
       goal: 'g',
       subtasks: [
-        { id: 't2', description: '', required_skill: 's', depends_on: [] },
+        { id: 't2', description: '', required_skill: 's', depends_on: [], perspective: null },
       ],
       max_workers: 2,
     };
