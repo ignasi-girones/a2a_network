@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     mcp_host: str = "localhost"
 
     # LLM Models
-    orchestrator_model: str = "groq/llama-3.3-70b-versatile"
+    orchestrator_model: str = "gemini/gemini-2.5-flash"
     normalizer_model: str = "gemini/gemini-2.5-flash"
     ae1_model: str = "mistral/mistral-large-latest"
     ae2_model: str = "cerebras/llama3.1-8b"
