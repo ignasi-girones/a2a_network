@@ -198,10 +198,10 @@ function App() {
   // ── User actions ─────────────────────────────────────────────────────
 
   const handleSubmit = useCallback(
-    async (prompt: string) => {
+    async (prompt: string, files?: File[]) => {
       setConflictMsg(null);
       try {
-        const { debate_id } = await createDebate(prompt);
+        const { debate_id } = await createDebate(prompt, files);
         await refreshDebatesList();
         setSelectedDebateId(debate_id);
         setDebateIdInURL(debate_id);

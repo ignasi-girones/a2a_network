@@ -110,15 +110,35 @@ export function persistedToDebateEvent(p: PersistedEvent): DebateEvent {
   };
 }
 
-/** POST /debates — kick off a new debate. Throws on 409. */
-export async function createDebate(prompt: string): Promise<{
-  debate_id: string;
-}> {
-  const res = await fetch(`${API}/debates`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ prompt }),
-  });
+/** POST /debates — kick off a new debate. Throws on 409.
+ *
+ * When `files` is provided, sends multipart/form-data so the orchestrator
+ * can persist and extract text from the attachments. Otherwise keeps the
+ * existing JSON path for backwards compatibility.
+ */
+export async function createDebate(
+  prompt: string,
+  files: File[] = [],
+): Promise<{ debate_id: string }> {
+  let res: Response;
+
+  if (files.length > 0) {
+    const form = new FormData();
+    form.append('prompt', prompt);
+    for (const f of files) form.append('files', f, f.name);
+    res = await fetch(`${API}/debates`, {
+      method: 'POST',
+      body: form,
+      // Let the browser set Content-Type with the boundary
+    });
+  } else {
+    res = await fetch(`${API}/debates`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt }),
+    });
+  }
+
   if (res.status === 409) {
     let active: DebateSummary | null = null;
     try {
@@ -129,6 +149,19 @@ export async function createDebate(prompt: string): Promise<{
     }
     throw new DebateAlreadyActiveError(active);
   }
+
+  // Surface validation errors (400) to the caller
+  if (res.status === 400) {
+    let detail = 'Invalid request';
+    try {
+      const body = (await res.json()) as { message?: string };
+      detail = body.message ?? detail;
+    } catch {
+      // ignore
+    }
+    throw new Error(detail);
+  }
+
   const body = (await jsonOrThrow(res)) as { debate_id: string };
   return body;
 }

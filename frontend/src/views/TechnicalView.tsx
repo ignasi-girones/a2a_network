@@ -36,7 +36,7 @@ interface Props {
   positions: AgentPositionsSample[];
   consensusHistory: ConsensusSnapshot[];
   disabled: boolean;
-  onSubmit: (prompt: string) => void;
+  onSubmit: (prompt: string, files?: File[]) => void;
 }
 
 export function TechnicalView({
@@ -69,7 +69,7 @@ export function TechnicalView({
           <h2 className="text-sm font-semibold text-gray-700 mb-3">
             Tema de debate
           </h2>
-          <PromptInput onSubmit={onSubmit} disabled={disabled} />
+          <PromptInput onSubmit={onSubmit} disabled={disabled} acceptFiles />
         </div>
         <VerdictDisplay
           verdict={verdict}

@@ -66,6 +66,19 @@ CREATE TABLE IF NOT EXISTS events (
 );
 
 CREATE INDEX IF NOT EXISTS events_by_debate ON events(debate_id, seq);
+
+CREATE TABLE IF NOT EXISTS attachments (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    debate_id    TEXT NOT NULL REFERENCES debates(id) ON DELETE CASCADE,
+    filename     TEXT NOT NULL,
+    mime_type    TEXT NOT NULL,
+    size_bytes   INTEGER NOT NULL,
+    storage_path TEXT NOT NULL,
+    extracted_text TEXT,
+    created_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS attachments_by_debate ON attachments(debate_id);
 """
 
 
@@ -137,6 +150,44 @@ class EventRow:
             "data": self.data,
             "created_at": self.created_at,
         }
+
+
+@dataclass(frozen=True)
+class AttachmentRow:
+    id: int
+    debate_id: str
+    filename: str
+    mime_type: str
+    size_bytes: int
+    storage_path: str
+    extracted_text: str | None
+    created_at: str
+
+    @classmethod
+    def from_row(cls, row: aiosqlite.Row) -> "AttachmentRow":
+        return cls(
+            id=row["id"],
+            debate_id=row["debate_id"],
+            filename=row["filename"],
+            mime_type=row["mime_type"],
+            size_bytes=row["size_bytes"],
+            storage_path=row["storage_path"],
+            extracted_text=row["extracted_text"],
+            created_at=row["created_at"],
+        )
+
+    def to_dict(self, *, include_text: bool = False) -> dict[str, Any]:
+        d: dict[str, Any] = {
+            "id": self.id,
+            "debate_id": self.debate_id,
+            "filename": self.filename,
+            "mime_type": self.mime_type,
+            "size_bytes": self.size_bytes,
+            "created_at": self.created_at,
+        }
+        if include_text:
+            d["extracted_text"] = self.extracted_text
+        return d
 
 
 # ── Store ───────────────────────────────────────────────────────────────────
@@ -375,6 +426,34 @@ class DebateStore:
             (debate_id, since_seq),
         )
         return [EventRow.from_row(r) for r in await cursor.fetchall()]
+
+    # ── Attachments ─────────────────────────────────────────────────────
+
+    async def add_attachment(
+        self,
+        debate_id: str,
+        filename: str,
+        mime_type: str,
+        size_bytes: int,
+        storage_path: str,
+        extracted_text: str | None,
+    ) -> int:
+        """Insert an attachment row and return its id."""
+        cursor = await self.db.execute(
+            "INSERT INTO attachments "
+            "(debate_id, filename, mime_type, size_bytes, storage_path, extracted_text) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (debate_id, filename, mime_type, size_bytes, storage_path, extracted_text),
+        )
+        await self.db.commit()
+        return cursor.lastrowid  # type: ignore[return-value]
+
+    async def get_attachments(self, debate_id: str) -> list[AttachmentRow]:
+        cursor = await self.db.execute(
+            "SELECT * FROM attachments WHERE debate_id=? ORDER BY id",
+            (debate_id,),
+        )
+        return [AttachmentRow.from_row(r) for r in await cursor.fetchall()]
 
     # ── Pub/Sub ─────────────────────────────────────────────────────────
 

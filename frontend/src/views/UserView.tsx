@@ -34,7 +34,7 @@ interface Props {
   //   - the user is viewing a terminal debate in read-only mode.
   // Parent (App.tsx) owns this — the view just renders it.
   disabled: boolean;
-  onSubmit: (prompt: string) => void;
+  onSubmit: (prompt: string, files?: File[]) => void;
   onReset: () => void;
 }
 
@@ -168,7 +168,7 @@ export function UserView({
                 Propón una decisión, dilema o estrategia. La moderadora abrirá la ronda y tres agentes intentarán llegar a un consenso claro.
               </p>
               <div className="mt-7 rounded-[24px] border border-white/10 bg-white/[0.04] p-4 shadow-2xl shadow-cyan-950/30 backdrop-blur">
-                <PromptInput onSubmit={onSubmit} disabled={disabled} variant="hero" />
+                <PromptInput onSubmit={onSubmit} disabled={disabled} variant="hero" acceptFiles />
               </div>
             </div>
           </motion.section>
@@ -204,6 +204,7 @@ export function UserView({
                   onSubmit={onSubmit}
                   disabled={disabled}
                   variant="compactDark"
+                  acceptFiles
                 />
               </div>
 

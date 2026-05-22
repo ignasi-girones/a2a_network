@@ -98,6 +98,17 @@ class Settings(BaseSettings):
     tls_enabled: bool = False
     tls_cert_dir: str = "/certs"
 
+    # Attachments (file uploads as debate context).
+    attachments_max_files: int = 5
+    attachments_max_size_mb: int = 5
+    attachments_allowed_mime: list[str] = [
+        "application/pdf",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "text/csv",
+        "text/plain",
+    ]
+    attachments_storage_dir: str = "/data/uploads"
+
     # Debate persistence. SQLite file written by the orchestrator only — every
     # SSE event of every debate gets persisted there so the frontend can
     # replay them on F5 or jump back to a past debate from the sidebar.

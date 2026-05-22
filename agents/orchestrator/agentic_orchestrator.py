@@ -138,8 +138,15 @@ class AgenticOrchestrator:
         # Track workers we spawned for this run so we can tear them down.
         self._spawned_this_run: list[str] = []
 
-    async def run(self, user_input: str) -> str:
-        """Execute one agentic run; returns the final answer text."""
+    async def run(self, user_input: str, *, extra_context: str | None = None) -> str:
+        """Execute one agentic run; returns the final answer text.
+
+        ``extra_context`` carries text extracted from user-uploaded attachments.
+        It is threaded to the planner and plan executor so agents can reference
+        the material during the debate.
+        """
+        self._extra_context = extra_context
+        self.executor.extra_context = extra_context
         try:
             # 1. Discover workers
             await self.progress.on_progress(

@@ -39,6 +39,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+from pathlib import Path
 
 from sse_starlette.sse import EventSourceResponse
 from starlette.requests import Request
@@ -47,10 +49,15 @@ from starlette.routing import Route
 
 from agents.orchestrator.agent_registry import registry
 from agents.orchestrator.agentic_orchestrator import AgenticOrchestrator
-from agents.orchestrator.debate_store import DebateAlreadyActiveError, DebateStore
+from agents.orchestrator.debate_store import (
+    AttachmentRow,
+    DebateAlreadyActiveError,
+    DebateStore,
+)
 from agents.orchestrator.persisting_progress import PersistingProgressCallback
 from agents.orchestrator.plan_executor import ProgressCallback
 from agents.orchestrator.worker_spawner import get_spawner
+from common.attachments import extract_text
 from common.config import settings
 from common.telemetry.log_context import current_debate_id
 
@@ -89,20 +96,33 @@ def _build_progress_chain(
     return PersistingProgressCallback(inner, store, debate_id)
 
 
-async def _run_debate(store: DebateStore, debate_id: str, prompt: str) -> None:
+async def _run_debate(
+    store: DebateStore,
+    debate_id: str,
+    prompt: str,
+    attachments: list[AttachmentRow] | None = None,
+) -> None:
     """Background task: actually run the debate and mark its terminal state."""
-    # Bind the ContextVar so every log line emitted within this task
-    # (and any child task it spawns via asyncio.create_task / executor)
-    # gets the [debate=<id>] prefix the logging filter prepends.
     current_debate_id.set(debate_id)
     progress = _build_progress_chain(store, debate_id)
+
+    extra_context: str | None = None
+    if attachments:
+        texts = [
+            f"[{a.filename}]\n{a.extracted_text}"
+            for a in attachments
+            if a.extracted_text
+        ]
+        if texts:
+            extra_context = "\n\n---\n\n".join(texts)
+
     try:
         orchestrator = AgenticOrchestrator(
             registry=registry,
             spawner=get_spawner(),
             progress=progress,
         )
-        verdict = await orchestrator.run(prompt)
+        verdict = await orchestrator.run(prompt, extra_context=extra_context)
         await store.mark_completed(debate_id, verdict)
     except Exception as e:
         logger.exception("Debate %s failed: %s", debate_id, e)
@@ -118,21 +138,65 @@ async def _run_debate(store: DebateStore, debate_id: str, prompt: str) -> None:
 
 
 async def create_debate(request: Request) -> JSONResponse:
-    """POST /debates — kicks off a new debate; rejects if one is already active."""
-    try:
-        body = await request.json()
-    except Exception:
-        return JSONResponse(
-            {"error": "invalid_json", "message": "body must be JSON"},
-            status_code=400,
-        )
+    """POST /debates — kicks off a new debate; rejects if one is already active.
 
-    prompt = (body.get("prompt") or "").strip() if isinstance(body, dict) else ""
+    Accepts both ``application/json`` (legacy) and ``multipart/form-data``
+    (with optional file attachments).
+    """
+    content_type = (request.headers.get("content-type") or "").split(";")[0].strip()
+    uploaded_files: list[tuple[str, str, bytes]] = []  # (filename, mime, content)
+
+    if content_type == "multipart/form-data":
+        form = await request.form()
+        prompt = (form.get("prompt") or "").strip() if isinstance(form.get("prompt"), str) else ""
+        for upload in form.getlist("files"):
+            if hasattr(upload, "filename"):
+                content = await upload.read()
+                uploaded_files.append((upload.filename, upload.content_type or "", content))
+        await form.close()
+    else:
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse(
+                {"error": "invalid_json", "message": "body must be JSON"},
+                status_code=400,
+            )
+        prompt = (body.get("prompt") or "").strip() if isinstance(body, dict) else ""
+
     if not prompt:
         return JSONResponse(
             {"error": "missing_prompt", "message": "prompt is required"},
             status_code=400,
         )
+
+    # ── Validate attachments ──────────────────────────────────────────
+    max_bytes = settings.attachments_max_size_mb * 1024 * 1024
+    if len(uploaded_files) > settings.attachments_max_files:
+        return JSONResponse(
+            {
+                "error": "too_many_files",
+                "message": f"max {settings.attachments_max_files} files allowed",
+            },
+            status_code=400,
+        )
+    for fname, fmime, fcontent in uploaded_files:
+        if fmime not in settings.attachments_allowed_mime:
+            return JSONResponse(
+                {
+                    "error": "invalid_mime",
+                    "message": f"file '{fname}' has unsupported type '{fmime}'",
+                },
+                status_code=400,
+            )
+        if len(fcontent) > max_bytes:
+            return JSONResponse(
+                {
+                    "error": "file_too_large",
+                    "message": f"file '{fname}' exceeds {settings.attachments_max_size_mb}MB limit",
+                },
+                status_code=400,
+            )
 
     store = _store(request)
     try:
@@ -148,12 +212,48 @@ async def create_debate(request: Request) -> JSONResponse:
             status_code=409,
         )
 
-    # Fire and forget — the background task drives the orchestrator and writes
-    # the terminal status when done.
-    asyncio.create_task(_run_debate(store, debate_id, prompt))
+    # ── Persist attachments & extract text ────────────────────────────
+    attachments: list[AttachmentRow] = []
+    if uploaded_files:
+        upload_dir = Path(settings.attachments_storage_dir) / debate_id
+        os.makedirs(upload_dir, exist_ok=True)
+        for fname, fmime, fcontent in uploaded_files:
+            file_path = upload_dir / fname
+            file_path.write_bytes(fcontent)
+            extracted = extract_text(file_path, fmime)
+            att_id = await store.add_attachment(
+                debate_id=debate_id,
+                filename=fname,
+                mime_type=fmime,
+                size_bytes=len(fcontent),
+                storage_path=str(file_path),
+                extracted_text=extracted,
+            )
+            attachments.append(
+                AttachmentRow(
+                    id=att_id,
+                    debate_id=debate_id,
+                    filename=fname,
+                    mime_type=fmime,
+                    size_bytes=len(fcontent),
+                    storage_path=str(file_path),
+                    extracted_text=extracted,
+                    created_at="",
+                )
+            )
+        logger.info(
+            "Debate %s: saved %d attachment(s) to %s",
+            debate_id, len(attachments), upload_dir,
+        )
+
+    asyncio.create_task(_run_debate(store, debate_id, prompt, attachments or None))
 
     return JSONResponse(
-        {"debate_id": debate_id, "status": "running"},
+        {
+            "debate_id": debate_id,
+            "status": "running",
+            "attachments": len(attachments),
+        },
         status_code=201,
     )
 
@@ -273,6 +373,18 @@ async def stream_debate(request: Request) -> EventSourceResponse:
     return EventSourceResponse(event_generator(), ping=20)
 
 
+async def get_attachments(request: Request) -> JSONResponse:
+    """GET /debates/<id>/attachments — list file attachments for a debate."""
+    store = _store(request)
+    debate_id = request.path_params["debate_id"]
+    if await store.get_debate(debate_id) is None:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    rows = await store.get_attachments(debate_id)
+    return JSONResponse(
+        {"count": len(rows), "attachments": [r.to_dict() for r in rows]}
+    )
+
+
 # ── Routes export ──────────────────────────────────────────────────────────
 
 debate_routes = [
@@ -282,4 +394,5 @@ debate_routes = [
     Route("/debates/{debate_id}", get_debate, methods=["GET"]),
     Route("/debates/{debate_id}/events", get_events, methods=["GET"]),
     Route("/debates/{debate_id}/stream", stream_debate, methods=["GET"]),
+    Route("/debates/{debate_id}/attachments", get_attachments, methods=["GET"]),
 ]
