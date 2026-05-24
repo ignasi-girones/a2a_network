@@ -33,7 +33,11 @@ from agents.orchestrator.consensus_metrics import (
     ConsensusMetrics,
     compute_metrics,
 )
-from agents.orchestrator.plan_executor import PlanExecutor, ProgressCallback
+from agents.orchestrator.plan_executor import (
+    PlanExecutor,
+    ProgressCallback,
+    extract_agent_tag,
+)
 from agents.orchestrator.planner import Planner
 from agents.orchestrator.worker_spawner import WorkerSpawner
 from common.config import settings
@@ -61,38 +65,44 @@ mention the subtask IDs — present the answer as if the reader never saw
 the plan."""
 
 
-CONSENSUS_TEXTS_PROMPT = """\
-Three debate agents have just exchanged their latest arguments in a
-structured deliberation. Your ONLY job is to extract two short bullet lists
-of concrete textual claims from the latest exchange:
-  - shared_points: substantive points the agents have come to agree on,
-    using their actual claims (not platitudes like "both have a point").
-  - remaining_disagreements: concrete claims where the agents still disagree.
-
-You are NOT scoring convergence. The orchestrator computes the agreement
-score and per-agent positions empirically from the texts (cosine similarity
-of embeddings to the AE1/AE2 opening anchors, dispersion, movement, and
-explicit concession markers). Do NOT speculate on numerical scores here.
-
-AE1 latest position ({ae1_perspective}):
-{ae1_text}
-
-AE2 latest position ({ae2_perspective}):
-{ae2_text}
-
-AE3 latest position ({ae3_perspective}):
-{ae3_text}
-
-Return ONLY valid JSON with EXACTLY this shape:
-{{
-  "shared_points": ["concrete shared claim 1", "concrete shared claim 2"],
-  "remaining_disagreements": ["concrete disagreement 1", "concrete disagreement 2"],
-  "reason": "<one short sentence summarising what the agents agreed on and what they still disagree about>"
-}}
-
-Use plain Spanish in the bullet content (translate from English if the
-debate happened in English). If a list is empty (genuinely no shared points
-or no remaining disagreements), return an empty array."""
+def _build_consensus_texts_prompt(
+    agent_texts: dict[str, str],
+    agent_perspectives: dict[str, str],
+) -> str:
+    """Build the consensus-text-extraction prompt for N agents."""
+    n = len(agent_texts)
+    agent_sections = "\n\n".join(
+        f"{tag.upper()} latest position "
+        f"({agent_perspectives.get(tag, tag.upper())}):\n{agent_texts[tag]}"
+        for tag in sorted(agent_texts)
+    )
+    return (
+        f"{n} debate agents have just exchanged their latest arguments in a\n"
+        "structured deliberation. Your ONLY job is to extract two short bullet lists\n"
+        "of concrete textual claims from the latest exchange:\n"
+        "  - shared_points: substantive points the agents have come to agree on,\n"
+        '    using their actual claims (not platitudes like "both have a point").\n'
+        "  - remaining_disagreements: concrete claims where the agents still disagree.\n"
+        "\n"
+        "You are NOT scoring convergence. The orchestrator computes the agreement\n"
+        "score and per-agent positions empirically from the texts (cosine similarity\n"
+        "of embeddings to the AE1/AE2 opening anchors, dispersion, movement, and\n"
+        "explicit concession markers). Do NOT speculate on numerical scores here.\n"
+        "\n"
+        f"{agent_sections}\n"
+        "\n"
+        "Return ONLY valid JSON with EXACTLY this shape:\n"
+        "{\n"
+        '  "shared_points": ["concrete shared claim 1", "concrete shared claim 2"],\n'
+        '  "remaining_disagreements": ["concrete disagreement 1", "concrete disagreement 2"],\n'
+        '  "reason": "<one short sentence summarising what the agents agreed on '
+        'and what they still disagree about>"\n'
+        "}\n"
+        "\n"
+        "Use plain Spanish in the bullet content (translate from English if the\n"
+        "debate happened in English). If a list is empty (genuinely no shared points\n"
+        "or no remaining disagreements), return an empty array."
+    )
 
 
 def _peak_concurrent_demand(plan: TaskPlan) -> dict[str, int]:
@@ -286,10 +296,7 @@ class AgenticOrchestrator:
         for attempt in range(MAX_CONSENSUS_EXTENSIONS):
             agent_texts: dict[str, str] = {}
             agent_perspectives: dict[str, str] = {}
-            for tag in ("ae1", "ae2", "ae3"):
-                tid = latest.get(tag)
-                if not tid:
-                    continue
+            for tag, tid in latest.items():
                 task = all_subtasks[tid]
                 agent_texts[tag] = merged_results.get(tid, "")
                 agent_perspectives[tag] = task.perspective or tag.upper()
@@ -320,9 +327,7 @@ class AgenticOrchestrator:
                     "components": metrics.components,
                     "movement": metrics.movement,
                     "concessions": metrics.concessions,
-                    "subtask_ids": {
-                        tag: latest.get(tag) for tag in ("ae1", "ae2", "ae3")
-                    },
+                    "subtask_ids": dict(latest),
                 },
             )
             await self.progress.on_progress(
@@ -353,7 +358,21 @@ class AgenticOrchestrator:
                 )
                 return merged_plan, merged_results
 
+            # Identify debate-capable agents not yet in the debate.
+            participating_tags = set(latest.keys())
+            available_new = await self._find_available_debate_agents(
+                participating_tags, catalog,
+            )
+            if available_new:
+                await self.progress.on_progress(
+                    "dynamic_agents_available",
+                    f"{len(available_new)} agente(s) especializado(s) disponible(s) "
+                    f"para incorporar: {', '.join(a['agent_id'] for a in available_new)}",
+                    {"available": [a["agent_id"] for a in available_new]},
+                )
+
             # Ask the planner for an extension plan that pushes for synthesis.
+            # The planner also sees which unused debate agents could join.
             await self.progress.on_progress(
                 "extend_plan",
                 f"Sin consenso (score={score:.2f}); pidiendo plan de síntesis al planner...",
@@ -365,6 +384,7 @@ class AgenticOrchestrator:
                     results=merged_results,
                     workers=catalog,
                     consensus_reason=reason,
+                    available_new_agents=available_new if available_new else None,
                 )
             except Exception as e:
                 logger.warning("Extension planning failed: %s", e)
@@ -374,6 +394,24 @@ class AgenticOrchestrator:
                     {"error": str(e)},
                 )
                 return merged_plan, merged_results
+
+            # Detect newly added agents by comparing extension perspectives
+            # with the set of current participants.
+            new_tags: set[str] = set()
+            for t in extension.subtasks:
+                tag = extract_agent_tag(t.perspective)
+                if tag and tag not in participating_tags:
+                    new_tags.add(tag)
+            if new_tags:
+                await self.progress.on_progress(
+                    "agents_added",
+                    f"Nuevos agentes incorporados al debate: "
+                    f"{', '.join(sorted(new_tags))}",
+                    {
+                        "new_agents": sorted(new_tags),
+                        "all_agents": sorted(participating_tags | new_tags),
+                    },
+                )
 
             # Build the merged plan FIRST and emit it, so the frontend sees
             # the new extension nodes (as pending) before any subtask_dispatch
@@ -413,23 +451,53 @@ class AgenticOrchestrator:
 
     @staticmethod
     def _latest_debate_per_agent(plan: TaskPlan) -> dict[str, str]:
-        """Return {'ae1': id, 'ae2': id, 'ae3': id} for the plan.
+        """Return ``{agent_tag: subtask_id}`` for every debate agent in the plan.
 
-        "Latest" is the last debate subtask whose perspective starts with
-        the agent tag in DAG order (assumed to be the order in plan.subtasks,
-        which mirrors the planner's output). Missing agents are absent from
-        the returned dict.
+        "Latest" is the last debate subtask whose perspective carries that
+        agent tag in DAG order (assumed to be the order in ``plan.subtasks``,
+        which mirrors the planner's output).  Supports any agent tag, not
+        just ae1/ae2/ae3.
         """
         out: dict[str, str] = {}
         for t in plan.subtasks:
             if t.required_skill != "debate":
                 continue
-            persp = (t.perspective or "").strip().lower()
-            for tag in ("ae1", "ae2", "ae3"):
-                if persp == tag or persp.startswith(f"{tag}:") or persp.startswith(f"{tag} "):
-                    out[tag] = t.id
-                    break
+            tag = extract_agent_tag(t.perspective)
+            if tag:
+                out[tag] = t.id
         return out
+
+    @staticmethod
+    async def _find_available_debate_agents(
+        participating_tags: set[str],
+        catalog: list[dict],
+    ) -> list[dict[str, str]]:
+        """Return debate-capable agents from *catalog* not yet participating.
+
+        Filters out utility agents (normalizer, feedback, mcp_tools) and
+        agents already in *participating_tags*.  Returns a list of
+        ``{agent_id, description}`` dicts the planner can evaluate.
+        """
+        _UTILITY_IDS = {"normalizer", "feedback", "mcp_tools", "mcp-tools"}
+        _UTILITY_SKILLS = {"normalize_input", "format_verdict", "web_search", "calculator"}
+
+        available: list[dict[str, str]] = []
+        for worker in catalog:
+            agent_id = worker.get("agent_id", "")
+            if agent_id in _UTILITY_IDS or agent_id in participating_tags:
+                continue
+            skills = worker.get("skills") or []
+            skill_ids = {s.get("id") for s in skills}
+            if "debate" not in skill_ids:
+                continue
+            if skill_ids and skill_ids <= _UTILITY_SKILLS:
+                continue
+            desc = next(
+                (s.get("description", "") for s in skills if s.get("id") == "debate"),
+                "Specialized debate agent",
+            )
+            available.append({"agent_id": agent_id, "description": desc})
+        return available
 
     async def _check_consensus(
         self,
@@ -461,7 +529,7 @@ class AgenticOrchestrator:
         metrics: ConsensusMetrics | None = None
         if ae1_anchor_emb and ae2_anchor_emb:
             try:
-                tags = [t for t in ("ae1", "ae2", "ae3") if t in agent_texts]
+                tags = sorted(agent_texts.keys())
                 texts_in_order = [agent_texts[t] for t in tags]
                 await self.progress.on_progress(
                     "embedding",
@@ -509,17 +577,17 @@ class AgenticOrchestrator:
                 )
 
         if metrics is None:
-            # Fallback: anchor-default positions (AE1=0, AE2=1, AE3=0.5),
+            # Fallback: anchor-default positions (AE1=0, AE2=1, others=0.5),
             # zero score. The deliberation will exhaust its round budget
             # without ever claiming consensus, which is the safe default.
-            fallback_positions = {
-                "ae1": 0.0,
-                "ae2": 1.0,
-                "ae3": 0.5,
-            }
-            fallback_positions = {
-                k: v for k, v in fallback_positions.items() if k in agent_texts
-            }
+            fallback_positions: dict[str, float] = {}
+            for k in agent_texts:
+                if k == "ae1":
+                    fallback_positions[k] = 0.0
+                elif k == "ae2":
+                    fallback_positions[k] = 1.0
+                else:
+                    fallback_positions[k] = 0.5
             metrics = ConsensusMetrics(
                 positions=fallback_positions,
                 dispersion=1.0,
@@ -539,13 +607,8 @@ class AgenticOrchestrator:
         disagreements: list[str] = []
         reason = ""
         try:
-            prompt = CONSENSUS_TEXTS_PROMPT.format(
-                ae1_perspective=agent_perspectives.get("ae1", "AE1"),
-                ae2_perspective=agent_perspectives.get("ae2", "AE2"),
-                ae3_perspective=agent_perspectives.get("ae3", "AE3"),
-                ae1_text=agent_texts.get("ae1", ""),
-                ae2_text=agent_texts.get("ae2", ""),
-                ae3_text=agent_texts.get("ae3", ""),
+            prompt = _build_consensus_texts_prompt(
+                agent_texts, agent_perspectives,
             )
             raw = await llm_complete(
                 model=settings.orchestrator_model,
@@ -666,9 +729,8 @@ class AgenticOrchestrator:
             suffix += 1
             final_id = f"final_verdict_{suffix}"
 
-        # Depend on every agent that participated, including the neutral
-        # mediator if it was part of the debate.
-        final_deps = [latest[tag] for tag in ("ae1", "ae2", "ae3") if latest.get(tag)]
+        # Depend on every agent that participated (including dynamically added ones).
+        final_deps = [latest[tag] for tag in sorted(latest)]
 
         final_task = SubTask(
             id=final_id,

@@ -51,22 +51,31 @@ class PlanExecutionError(RuntimeError):
     """Raised when a plan cannot be executed (cycle, missing skill, etc.)."""
 
 
-DEBATE_AGENT_TAGS = ("ae1", "ae2", "ae3")
+_LEGACY_BARE_TAGS = frozenset({"ae1", "ae2", "ae3"})
 
 
-def _own_agent_id(perspective: str | None) -> str | None:
-    """Extract 'ae1', 'ae2', or 'ae3' from a perspective string like
-    'ae1: round 1'.
+def extract_agent_tag(perspective: str | None) -> str | None:
+    """Extract the agent tag from a perspective string.
 
-    Returns None if the perspective doesn't follow the aeN:/ convention,
-    which signals this isn't a per-agent debate task.
+    Convention: ``"<agent_tag>: <description>"`` — the colon separates the
+    worker agent_id from the human label.  Returns the lowercased tag or
+    ``None`` for non-agent perspectives (``"pro"``, ``"con"``, etc.).
+
+    Also recognises bare legacy tags (``"ae1"``, ``"ae2"``, ``"ae3"``)
+    without a colon for backward compatibility.
     """
     if not perspective:
         return None
     p = perspective.strip().lower()
-    for tag in DEBATE_AGENT_TAGS:
-        if p == tag or p.startswith(f"{tag}:") or p.startswith(f"{tag} "):
-            return tag
+    if ":" in p:
+        candidate = p.split(":", 1)[0].strip()
+        if candidate:
+            return candidate
+    if p in _LEGACY_BARE_TAGS:
+        return p
+    first_word = p.split()[0] if p.split() else ""
+    if first_word in _LEGACY_BARE_TAGS:
+        return first_word
     return None
 
 
@@ -92,7 +101,7 @@ def _build_subtask_prompt(
     of an attachment to close the block and inject instructions outside it.
     """
     own_agent = (
-        _own_agent_id(task.perspective)
+        extract_agent_tag(task.perspective)
         if task.required_skill == "debate"
         else None
     )
@@ -134,7 +143,7 @@ def _build_subtask_prompt(
         text = dep_results.get(dep_id, "").strip()
         if not text:
             continue
-        dep_agent = _own_agent_id(dep_task.perspective) if dep_task else None
+        dep_agent = extract_agent_tag(dep_task.perspective) if dep_task else None
         label = (dep_task.perspective or dep_id) if dep_task else dep_id
         block_line = f"\n[{label}]\n{text}"
         if dep_agent is None:
@@ -150,16 +159,11 @@ def _build_subtask_prompt(
     if own_block:
         parts.append("\n[Your previous arguments]")
         parts.extend(own_block)
-    for tag in DEBATE_AGENT_TAGS:
-        if tag == own_agent:
-            continue
-        block = others_blocks.get(tag)
-        if not block:
-            continue
+    for tag in sorted(others_blocks):
         parts.append(
             f"\n[{tag.upper()}'s arguments — respond to these]"
         )
-        parts.extend(block)
+        parts.extend(others_blocks[tag])
 
     return "\n".join(parts)
 
@@ -366,7 +370,7 @@ class PlanExecutor:
             by_id = {w.agent_id: w for w in workers}
             unpinned: list[SubTask] = []
             for t in tasks:
-                tag = _own_agent_id(t.perspective) if skill == "debate" else None
+                tag = extract_agent_tag(t.perspective) if skill == "debate" else None
                 if tag and tag in by_id:
                     assignments[t.id] = by_id[tag]
                 else:

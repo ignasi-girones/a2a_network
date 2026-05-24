@@ -145,7 +145,9 @@ pushes toward an evidence-driven convergence.
 You will be told:
   - the IDs of each agent's most recent contribution (one per agent),
   - the consensus reason explaining why convergence has not yet happened,
-  - the worker catalog (so you can pick the right `required_skill`).
+  - the worker catalog (so you can pick the right `required_skill`),
+  - optionally, a list of AVAILABLE NEW DEBATE AGENTS that could join the
+    deliberation (agents discovered in the registry but not yet participating).
 
 Return ONLY valid JSON with EXACTLY this shape (all top-level fields required):
 {
@@ -162,62 +164,81 @@ Rules:
   description marks it as deliberative / multi-agent). Do NOT include any
   preprocessing or final-formatting subtasks here — the orchestrator
   handles those itself.
-- All three subtasks MUST be HONEST RE-EVALUATION rounds. Convergence is the
+- All subtasks MUST be HONEST RE-EVALUATION rounds. Convergence is the
   goal, but FORCED CENTRISM IS NOT. The instructions you write must:
   1. Tell each agent to genuinely re-weigh both sides on the merits of the
      evidence presented so far, not to defend the role they were assigned.
-  2. Make explicit that CHANGING SIDES is encouraged when warranted: if AE1
-     finds AE2's evidence stronger overall, AE1 should say "You changed my
-     mind — I now agree that <X>" and shift its position toward AE2's stance.
-     The same applies in reverse.
+  2. Make explicit that CHANGING SIDES is encouraged when warranted: if one
+     agent finds another's evidence stronger overall, it should say
+     "You changed my mind — I now agree that <X>" and shift its position.
   3. Forbid vague "both sides have a point" language used to avoid
      confrontation. If one side is clearly stronger, the agents should say so
      and converge TOWARD that side, not toward the centre.
-  4. AE3 must NOT default to mediating between AE1 and AE2. AE3 weighs the
-     evidence independently and explicitly endorses the side it finds
-     better-grounded — including a full endorsement of AE1 or AE2 when
+  4. Independent evaluators must NOT default to mediating. They weigh the
+     evidence independently and explicitly endorse the side they find
+     better-grounded — including a full endorsement of one side when
      warranted. Saying "they are both right in their own way" is a failure
-     mode for AE3 unless the evidence genuinely is balanced.
-  5. The desired outcome is an *evidence-driven* convergence: ideally the
-     three agents end up close to each other AND close to whichever stance
-     the strongest evidence supports — not at 0.5 by default.
-- Use `perspective` with the "ae1: ..." / "ae2: ..." / "ae3: ..." convention.
-  Use round labels like "ae1: synthesis 1", "ae2: synthesis 1",
-  "ae3: synthesis 1" (or 2, 3, ...) reflecting how many synthesis rounds have
-  already happened.
+     mode unless the evidence genuinely is balanced.
+  5. The desired outcome is an *evidence-driven* convergence: ideally all
+     agents end up close to each other AND close to whichever stance the
+     strongest evidence supports — not at 0.5 by default.
+- Use `perspective` with the "<agent_id>: ..." convention (e.g.
+  "ae1: synthesis 1", "ae2: synthesis 1", "ae3: synthesis 1"). The agent_id
+  prefix MUST match a real worker's agent_id so the orchestrator can pin the
+  subtask to the correct worker.
 
 CRITICAL — PARALLEL DEPS, NOT SEQUENTIAL:
-- The three new subtasks must run IN PARALLEL within this round. Therefore
-  `depends_on` for ALL THREE new subtasks MUST be the SAME set: the latest
-  debate subtask IDs for each of the three agents from the PREVIOUS round
-  (you will be told exactly which IDs those are).
-- Do NOT make x2 depend on x1, or x3 depend on x1/x2. That would force a
-  sequential chain inside the same round, which means the first agent never
-  sees what the others say in this round and only the last agent sees
-  everyone. We want every agent to react to the same shared snapshot of the
-  previous round.
+- ALL new subtasks must run IN PARALLEL within this round. Therefore
+  `depends_on` for EVERY new subtask MUST be the SAME set: the latest
+  debate subtask IDs from the PREVIOUS round (you will be told exactly
+  which IDs those are).
+- Do NOT make any new subtask depend on another new subtask. That would
+  force a sequential chain inside the same round and break the snapshot
+  guarantee. Every agent must react to the same shared context.
 - The orchestrator will tell you the consensus reason — address that gap
   explicitly in each subtask's description.
 
-═══════ EXAMPLE: re-evaluation extension (3 subtasks, all parallel) ═══════
-Given the original plan ended with debate IDs t2 (ae1), t3 (ae2), t4 (ae3),
-and the consensus reason was "AE2's evidence on metric X looks stronger but
-AE1 has not yet engaged with it":
+═══════ ADDING NEW AGENTS TO BREAK DEADLOCKS ═══════
+You may be told about AVAILABLE NEW DEBATE AGENTS — specialized agents
+discovered in the registry that are not yet participating in the debate.
+If the current agents are stuck and a fresh perspective would plausibly help
+break the deadlock, you MAY add subtasks for one or more of these agents.
+
+Rules for new agents:
+- New agents MUST use the same deliberative `required_skill` as existing agents.
+- New agents' `perspective` MUST follow the "<agent_id>: <role>" convention,
+  using the exact agent_id from the available-agents list.
+- New agents' `depends_on` MUST be the SAME set as all other subtasks in this
+  extension (the previous round's latest IDs) — they run in PARALLEL.
+- New agents' `description` MUST include a brief summary of the debate topic
+  and the current state of disagreement so they can catch up — they have NOT
+  seen any previous rounds. Tell them their job is to provide an independent
+  expert perspective to help break the deadlock.
+- Do NOT add more than 2 new agents in a single extension.
+- Do NOT add agents unless their expertise is clearly relevant to the current
+  deadlock. If the existing agents can resolve it themselves, prefer fewer
+  agents.
+- Do NOT add utility agents (normalizer, feedback, formatters, tools). Only
+  add debate/deliberative agents.
+
+═══════ EXAMPLE: extension with 3 existing + 1 new agent ═══════
+Given debate IDs t2 (ae1), t3 (ae2), t4 (ae3) and available new agent
+"ae4" with debate skill, where the deadlock involves a legal dimension
+none of the current agents have addressed:
 {
   "goal": "Reach an evidence-driven answer on remote vs in-person work",
   "subtasks": [
-    {"id":"x1","description":"ROUND: re-evaluation 1. You entered as DevOps Engineer (pro-remote) but your task now is HONEST re-evaluation, not advocacy. Re-read AE2 and AE3's arguments from the previous round. Specifically engage with AE2's evidence on metric X — if it is stronger than your initial counter, say 'You changed my mind on X' and shift your overall stance toward AE2's. If after honest re-weighing you still find your initial side stronger, defend it with the new evidence. Do NOT settle for vague middle-ground language. Format: AGREEMENTS: / REFINEMENT:","required_skill":"debate","depends_on":["t2","t3","t4"],"perspective":"ae1: synthesis 1"},
-    {"id":"x2","description":"ROUND: re-evaluation 1. You entered as Team Lead (pro-onsite) but your task now is HONEST re-evaluation, not advocacy. Re-read AE1 and AE3's arguments from the previous round. If AE1's evidence has overturned any of your claims, concede explicitly and shift your stance. If you still find your initial side stronger after honest re-weighing, defend it. Do NOT settle for vague middle-ground language. Format: AGREEMENTS: / REFINEMENT:","required_skill":"debate","depends_on":["t2","t3","t4"],"perspective":"ae2: synthesis 1"},
-    {"id":"x3","description":"ROUND: re-evaluation 1. You are an independent evaluator, NOT a mediator. Weigh AE1's vs AE2's arguments strictly on evidence quality. If AE2's evidence on metric X is decisively stronger, endorse AE2's position — even fully — and explain why. Equally, if AE1's case is stronger, endorse AE1. Only stay near the middle if the evidence is genuinely balanced. Avoid 'both have a point' language unless you can defend it specifically. Format: AGREEMENTS: / REFINEMENT:","required_skill":"debate","depends_on":["t2","t3","t4"],"perspective":"ae3: synthesis 1"}
+    {"id":"x1","description":"ROUND: re-evaluation 1. HONEST re-evaluation...","required_skill":"debate","depends_on":["t2","t3","t4"],"perspective":"ae1: synthesis 1"},
+    {"id":"x2","description":"ROUND: re-evaluation 1. HONEST re-evaluation...","required_skill":"debate","depends_on":["t2","t3","t4"],"perspective":"ae2: synthesis 1"},
+    {"id":"x3","description":"ROUND: re-evaluation 1. Independent evaluator...","required_skill":"debate","depends_on":["t2","t3","t4"],"perspective":"ae3: synthesis 1"},
+    {"id":"x4","description":"You are joining an ongoing debate about remote vs in-person work. The current agents disagree on the legal implications of each model. Read the previous round's arguments and provide your independent expert analysis on the legal dimension. Format: AGREEMENTS: / REFINEMENT:","required_skill":"debate","depends_on":["t2","t3","t4"],"perspective":"ae4: legal analysis expert"}
   ],
-  "max_workers": 3
+  "max_workers": 4
 }
 
-Notice all three `depends_on` are identical — the previous round's outputs
-only. That is deliberate: it gives every agent the same starting context.
-Notice also that NO description re-asserts the agent's initial role/stance
-as if it were still binding — the agents are explicitly told the previous
-role was a starting point, not a position to defend.
+Notice ALL `depends_on` are identical including the new agent's. The new
+agent reads the same snapshot as everyone else. Its description gives it
+enough context to contribute meaningfully on its first round.
 """
 
 
@@ -459,13 +480,21 @@ class Planner:
         results: dict[str, str],
         workers: list[dict[str, Any]],
         consensus_reason: str,
+        available_new_agents: list[dict[str, str]] | None = None,
     ) -> TaskPlan:
         """Produce a small extension plan to push the agents toward consensus.
 
         The extension is a fresh DAG that the orchestrator will execute on top
         of the original plan's results. Subtask IDs in the extension must not
         collide with the original.
+
+        ``available_new_agents`` is a list of ``{agent_id, description}``
+        dicts describing debate-capable agents discovered in the registry but
+        not yet participating.  The planner may choose to include subtasks for
+        them if a fresh perspective would help break the deadlock.
         """
+        from agents.orchestrator.plan_executor import extract_agent_tag
+
         catalog = _format_worker_catalog(workers)
         known_skills = {
             s.get("id")
@@ -478,11 +507,9 @@ class Planner:
         debate_tasks = [t for t in original.subtasks if t.required_skill == "debate"]
         latest_per_agent: dict[str, str] = {}
         for t in debate_tasks:
-            persp = (t.perspective or "").lower()
-            for tag in ("ae1", "ae2", "ae3"):
-                if persp.startswith(tag):
-                    latest_per_agent[tag] = t.id
-                    break
+            tag = extract_agent_tag(t.perspective)
+            if tag:
+                latest_per_agent[tag] = t.id
         latest_ids = list(latest_per_agent.values())
         existing_ids = [t.id for t in original.subtasks]
 
@@ -492,6 +519,23 @@ class Planner:
             f"{(results.get(tid, '') or '')[:600]}"
             for tid in latest_ids
         )
+
+        # Format available-but-unused debate agents.
+        if available_new_agents:
+            new_agents_section = (
+                "\n\nAvailable NEW debate agents (not currently participating). "
+                "You MAY add subtasks for one or more of these if their fresh "
+                "perspective would help break the deadlock:\n"
+                + "\n".join(
+                    f"  - agent_id: {a['agent_id']}, "
+                    f"description: {a.get('description', 'debate agent')}"
+                    for a in available_new_agents
+                )
+            )
+        else:
+            new_agents_section = (
+                "\n\n(No additional debate agents available to add.)"
+            )
 
         user_prompt = (
             f"Original goal: {original.goal}\n\n"
@@ -503,7 +547,8 @@ class Planner:
             f"subtasks should depend on these so context propagates:\n"
             f"{latest_per_agent}\n\n"
             f"Worker catalog:\n{catalog}\n\n"
-            f"Valid `required_skill` values: {sorted(known_skills)}\n\n"
+            f"Valid `required_skill` values: {sorted(known_skills)}"
+            f"{new_agents_section}\n\n"
             "Emit the JSON extension plan now."
         )
         messages = [

@@ -13,6 +13,12 @@ set -e
 
 export PYTHONPATH="$(pwd)"
 
+# Activate the virtual environment so `python` resolves to the venv binary
+# with all project dependencies installed.
+if [ -f ".venv/bin/activate" ]; then
+    source .venv/bin/activate
+fi
+
 # Make sure the logs directory exists and is empty for this run so old
 # output doesn't get confused with the new run.
 LOG_DIR="$(pwd)/logs"

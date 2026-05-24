@@ -1,0 +1,750 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>A2A Debate Network</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/theme/simple.css">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400&display=swap');
+
+  :root {
+    --blue-100: #E8F4FA;
+    --blue-200: #B8D8EA;
+    --blue-300: #7BAFCF;
+    --blue-400: #5196B8;
+    --blue-500: #2C6F9B;
+    --blue-600: #1B4F72;
+    --beige-100: #FBF7F2;
+    --beige-200: #F2E8D5;
+    --beige-300: #E3D3B8;
+    --beige-400: #D4B896;
+    --beige-500: #C4A67D;
+    --beige-600: #A68B5B;
+    --dark: #2D3436;
+    --muted: #636E72;
+  }
+
+  .reveal-viewport { background: var(--beige-100); }
+
+  .reveal {
+    font-family: 'Inter', -apple-system, sans-serif;
+    color: var(--dark);
+  }
+  .reveal h1, .reveal h2, .reveal h3 {
+    font-family: 'Inter', sans-serif;
+    font-weight: 600;
+    color: var(--blue-600);
+    text-transform: none;
+    letter-spacing: -0.02em;
+    line-height: 1.2;
+  }
+  .reveal h1 { font-size: 2.4em; }
+  .reveal h2 { font-size: 1.6em; margin-bottom: 0.6em; }
+  .reveal h3 { font-size: 1.1em; color: var(--blue-500); font-weight: 500; }
+  .reveal p, .reveal li { font-weight: 300; font-size: 0.72em; line-height: 1.6; color: var(--dark); }
+  .reveal ul { list-style: none; padding: 0; }
+  .reveal li { padding-left: 1.2em; position: relative; margin-bottom: 0.5em; }
+  .reveal li::before { content: ""; position: absolute; left: 0; top: 0.55em; width: 6px; height: 6px; border-radius: 50%; background: var(--blue-400); }
+  .reveal code, .reveal pre { font-family: 'JetBrains Mono', monospace; }
+  .reveal pre { background: var(--blue-600); color: #E8F4FA; border-radius: 12px; padding: 1em 1.2em; font-size: 0.48em; text-align: left; box-shadow: 0 8px 30px rgba(27,79,114,0.15); }
+  .reveal .slide-number { color: var(--muted); font-size: 0.5em; }
+
+  /* ── Custom classes ── */
+  .tag {
+    display: inline-block; padding: 0.2em 0.8em; border-radius: 20px;
+    font-size: 0.55em; font-weight: 500; margin: 0.15em;
+  }
+  .tag-blue { background: var(--blue-200); color: var(--blue-600); }
+  .tag-beige { background: var(--beige-300); color: var(--beige-600); }
+
+  .card {
+    background: white; border-radius: 16px; padding: 1.2em 1.5em;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.06); text-align: left;
+    border: 1px solid var(--beige-300);
+  }
+  .card-blue {
+    background: var(--blue-100); border: 1px solid var(--blue-200);
+  }
+  .card h3 { margin: 0 0 0.4em 0; font-size: 0.8em; }
+  .card p, .card li { font-size: 0.6em; margin: 0.2em 0; }
+
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1.2em; }
+  .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1em; }
+  .grid-4 { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 0.8em; }
+
+  .accent { color: var(--blue-500); font-weight: 500; }
+  .accent-beige { color: var(--beige-600); font-weight: 500; }
+  .big-number { font-size: 3em; font-weight: 700; color: var(--blue-500); line-height: 1; }
+  .subtitle { color: var(--muted); font-weight: 300; font-size: 0.7em; }
+  .small { font-size: 0.55em; color: var(--muted); }
+
+  .flow-arrow {
+    display: inline-block; color: var(--blue-400); font-size: 1.5em;
+    margin: 0 0.3em; vertical-align: middle;
+  }
+
+  .diagram-box {
+    display: inline-block; padding: 0.4em 1em; border-radius: 10px;
+    font-size: 0.65em; font-weight: 500; vertical-align: middle;
+  }
+  .db-blue { background: var(--blue-200); color: var(--blue-600); }
+  .db-beige { background: var(--beige-300); color: var(--beige-600); }
+  .db-white { background: white; color: var(--dark); border: 2px solid var(--beige-300); }
+
+  .center-v { display: flex; flex-direction: column; align-items: center; justify-content: center; }
+
+  .quote {
+    font-size: 1.1em; font-weight: 400; font-style: italic;
+    color: var(--blue-600); line-height: 1.5; padding: 0 1em;
+    border-left: 4px solid var(--beige-400);
+  }
+
+  .highlight-box {
+    background: linear-gradient(135deg, var(--blue-100), var(--beige-200));
+    border-radius: 16px; padding: 1.2em 1.5em;
+    border: 1px solid var(--beige-300);
+  }
+
+  .icon { font-size: 2em; margin-bottom: 0.3em; display: block; }
+
+  .reveal section img {
+    border: none; box-shadow: none; background: none;
+  }
+
+  /* Title slide */
+  .title-slide h1 {
+    font-size: 2.6em;
+    background: linear-gradient(135deg, var(--blue-500), var(--blue-600));
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  /* Comparison table */
+  .compare-table { width: 100%; border-collapse: collapse; font-size: 0.6em; }
+  .compare-table th { background: var(--blue-500); color: white; padding: 0.6em 1em; text-align: left; }
+  .compare-table td { padding: 0.5em 1em; border-bottom: 1px solid var(--beige-300); }
+  .compare-table tr:nth-child(even) td { background: var(--beige-100); }
+
+  .pro { color: #27ae60; font-weight: 500; }
+  .con { color: #c0392b; font-weight: 500; }
+</style>
+</head>
+<body>
+<div class="reveal">
+<div class="slides">
+
+<!-- ═══════════════════════ SLIDE 1: TITLE ═══════════════════════ -->
+<section>
+  <div class="title-slide" style="padding-top: 1em;">
+    <p class="subtitle" style="font-size: 0.6em; letter-spacing: 0.15em; text-transform: uppercase; color: var(--beige-500); margin-bottom: 0.5em;">Universitat Politecnica de Catalunya</p>
+    <h1>A2A Debate Network</h1>
+    <p style="font-size: 0.75em; color: var(--muted); margin-top: 0.8em;">
+      Una red de agentes que deliberan<br>usando el protocolo Agent-to-Agent
+    </p>
+    <div style="margin-top: 2em;">
+      <span class="tag tag-blue">A2A Protocol</span>
+      <span class="tag tag-beige">Multi-Agent</span>
+      <span class="tag tag-blue">LLM</span>
+      <span class="tag tag-beige">Consensus</span>
+    </div>
+    <p class="small" style="margin-top: 2.5em;">Irina Regueiro &nbsp;&middot;&nbsp; 2025</p>
+  </div>
+</section>
+
+<!-- ═══════════════════════ SLIDE 2: HOOK ═══════════════════════ -->
+<section data-background-color="#1B4F72">
+  <h2 style="color: var(--beige-200); font-size: 2em; margin-bottom: 0.8em;">Una pregunta</h2>
+  <p style="color: white; font-size: 1.1em; font-weight: 300; line-height: 1.6;">
+    <!-- PERSONALIZAR CON LA PREGUNTA DEL DEBATE -->
+    ¿Es mejor trabajar en remoto<br>o de manera presencial?
+  </p>
+  <p style="color: var(--blue-200); font-size: 0.65em; margin-top: 2em;">
+    Vamos a dejar que una red de agentes inteligentes debata esta cuestión por nosotros.
+  </p>
+</section>
+
+<!-- ═══════════════════════ SLIDE 3: QUÉ ES A2A ═══════════════════════ -->
+<section>
+  <h2>¿Qué es el protocolo A2A?</h2>
+  <div class="highlight-box" style="margin: 1em auto; max-width: 85%;">
+    <p style="font-size: 0.8em; text-align: center; margin: 0;">
+      Un <span class="accent">estándar abierto</span> de Google que permite a agentes de IA
+      <span class="accent">descubrirse</span>, <span class="accent">comunicarse</span>
+      y <span class="accent">colaborar</span> entre sí,<br>
+      independientemente de quién los haya creado.
+    </p>
+  </div>
+  <div class="grid-3" style="margin-top: 1.5em;">
+    <div class="card">
+      <span class="icon">&#x1f310;</span>
+      <h3>Abierto</h3>
+      <p>Cualquier framework, cualquier lenguaje, cualquier proveedor</p>
+    </div>
+    <div class="card">
+      <span class="icon">&#x1f4e1;</span>
+      <h3>Interoperable</h3>
+      <p>Agentes de distintos equipos colaboran sin adaptadores</p>
+    </div>
+    <div class="card">
+      <span class="icon">&#x1f50d;</span>
+      <h3>Descubrible</h3>
+      <p>Los agentes publican sus capacidades y se encuentran solos</p>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════ SLIDE 4: AGENT CARD ═══════════════════════ -->
+<section>
+  <h2>Agent Card</h2>
+  <p class="subtitle" style="margin-bottom: 1em;">La identidad pública de cada agente</p>
+  <div class="grid-2">
+    <div class="card card-blue" style="font-size: 0.85em;">
+      <pre style="font-size: 0.7em; background: var(--blue-600);">{
+  "name": "Specialized Agent (AE1)",
+  "version": "1.0.0",
+  "capabilities": {
+    "streaming": true
+  },
+  "skills": [{
+    "id": "debate",
+    "name": "Debate",
+    "description": "Argues a topic
+      from an assigned role...",
+    "tags": ["deliberative",
+             "multi-agent"]
+  }]
+}</pre>
+    </div>
+    <div style="text-align: left; padding-top: 0.5em;">
+      <div class="card" style="margin-bottom: 0.8em;">
+        <h3 style="color: var(--blue-500);">&#x1f4cb; &nbsp;Metadata</h3>
+        <p>Nombre, versión, proveedor, URL</p>
+      </div>
+      <div class="card" style="margin-bottom: 0.8em;">
+        <h3 style="color: var(--blue-500);">&#x2699;&#xfe0f; &nbsp;Capabilities</h3>
+        <p>Streaming, push notifications, modo de input/output</p>
+      </div>
+      <div class="card">
+        <h3 style="color: var(--blue-500);">&#x1f3af; &nbsp;Skills</h3>
+        <p>Qué sabe hacer, cuándo usarlo, qué formato espera</p>
+      </div>
+    </div>
+  </div>
+  <p class="small" style="margin-top: 1em;">Servida en <code>/.well-known/agent-card.json</code> &mdash; el punto de entrada del descubrimiento</p>
+</section>
+
+<!-- ═══════════════════════ SLIDE 5: DISCOVERY ═══════════════════════ -->
+<section>
+  <h2>Agent Discovery</h2>
+  <p class="subtitle" style="margin-bottom: 1.5em;">Los agentes se encuentran y se registran automáticamente</p>
+  <div style="text-align: center; margin: 1em 0;">
+    <span class="diagram-box db-blue">Agente se inicia</span>
+    <span class="flow-arrow">&rarr;</span>
+    <span class="diagram-box db-beige">Publica Agent Card</span>
+    <span class="flow-arrow">&rarr;</span>
+    <span class="diagram-box db-blue">Se registra en el Orchestrador</span>
+  </div>
+  <div style="text-align: center; margin: 1.5em 0;">
+    <span class="diagram-box db-white">Orchestrador consulta Registry</span>
+    <span class="flow-arrow">&rarr;</span>
+    <span class="diagram-box db-beige">Lee skills de cada agente</span>
+    <span class="flow-arrow">&rarr;</span>
+    <span class="diagram-box db-blue">Planifica el debate</span>
+  </div>
+  <div class="card" style="max-width: 75%; margin: 1.5em auto; text-align: center;">
+    <p style="margin: 0;">El orquestador <span class="accent">no sabe de antemano</span> qué agentes existen.
+    Lee sus skills y decide cómo usarlos.</p>
+  </div>
+</section>
+
+<!-- ═══════════════════════ SLIDE 6: COMUNICACIÓN A2A ═══════════════════════ -->
+<section>
+  <h2>Comunicación A2A</h2>
+  <div class="grid-2" style="margin-top: 1em;">
+    <div class="card">
+      <h3>JSON-RPC 2.0</h3>
+      <p>Protocolo de transporte estándar</p>
+      <ul style="margin-top: 0.5em;">
+        <li><code>SendMessage</code> &mdash; síncrono</li>
+        <li><code>SendStreamingMessage</code> &mdash; SSE</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Task Lifecycle</h3>
+      <p>Cada petición crea un Task con estados:</p>
+      <div style="margin-top: 0.5em; text-align: center;">
+        <span class="tag tag-beige">submitted</span>
+        <span class="tag tag-blue">working</span>
+        <span class="tag tag-beige">completed</span>
+      </div>
+    </div>
+  </div>
+  <div class="card" style="max-width: 80%; margin: 1.2em auto; text-align: center;">
+    <p style="margin: 0;">
+      El orquestador usa <span class="accent">streaming</span> hacia el frontend (progreso en tiempo real)
+      y llamadas <span class="accent">síncronas</span> a los workers (espera respuesta completa).
+    </p>
+  </div>
+</section>
+
+<!-- ═══════════════════════ SLIDE 7: CASO DE USO ═══════════════════════ -->
+<section data-background-color="#F2E8D5">
+  <h2 style="color: var(--blue-600);">Nuestro caso de uso</h2>
+  <p style="font-size: 0.85em; color: var(--dark); margin-bottom: 1em;">
+    Una <span class="accent">deliberación multi-agente</span> donde agentes con distintos roles
+    debaten un tema y buscan consenso.
+  </p>
+  <div class="grid-2" style="max-width: 85%; margin: 0 auto;">
+    <div class="card">
+      <h3>¿Por qué debates?</h3>
+      <ul>
+        <li>Explota la naturaleza <span class="accent">distribuida</span> de A2A</li>
+        <li>Cada agente es <span class="accent">independiente</span> con su propio LLM</li>
+        <li>El consenso emerge de la <span class="accent">interacción</span>, no de un solo modelo</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>¿Qué lo hace interesante?</h3>
+      <ul>
+        <li>Distintos modelos = distintas <span class="accent">perspectivas</span></li>
+        <li>El orquestador <span class="accent">no sabe la respuesta</span></li>
+        <li>Agentes externos pueden <span class="accent">unirse en vivo</span></li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════ SLIDE 8: ARQUITECTURA ═══════════════════════ -->
+<section>
+  <h2>Arquitectura</h2>
+  <div class="grid-4" style="margin-top: 1em;">
+    <div class="card card-blue" style="text-align: center; grid-column: 1 / -1;">
+      <h3 style="margin: 0;">&#x1f3af; Orquestador</h3>
+      <p style="margin: 0.3em 0 0 0;">Gemini 2.5 Flash &mdash; planifica, coordina, evalúa consenso</p>
+    </div>
+    <div class="card" style="text-align: center;">
+      <p style="font-size: 0.7em; font-weight: 600; color: var(--blue-500); margin: 0;">Normalizer</p>
+      <p style="font-size: 0.5em; margin: 0.2em 0 0 0;">Gemini Flash</p>
+      <span class="tag tag-beige" style="font-size: 0.45em;">preproceso</span>
+    </div>
+    <div class="card" style="text-align: center;">
+      <p style="font-size: 0.7em; font-weight: 600; color: var(--blue-500); margin: 0;">AE1</p>
+      <p style="font-size: 0.5em; margin: 0.2em 0 0 0;">Mistral Large</p>
+      <span class="tag tag-blue" style="font-size: 0.45em;">debate</span>
+    </div>
+    <div class="card" style="text-align: center;">
+      <p style="font-size: 0.7em; font-weight: 600; color: var(--blue-500); margin: 0;">AE2</p>
+      <p style="font-size: 0.5em; margin: 0.2em 0 0 0;">Cerebras Llama</p>
+      <span class="tag tag-blue" style="font-size: 0.45em;">debate</span>
+    </div>
+    <div class="card" style="text-align: center;">
+      <p style="font-size: 0.7em; font-weight: 600; color: var(--blue-500); margin: 0;">AE3</p>
+      <p style="font-size: 0.5em; margin: 0.2em 0 0 0;">Groq Llama</p>
+      <span class="tag tag-blue" style="font-size: 0.45em;">debate</span>
+    </div>
+  </div>
+  <div class="grid-2" style="margin-top: 0.8em; max-width: 60%; margin-left: auto; margin-right: auto;">
+    <div class="card" style="text-align: center;">
+      <p style="font-size: 0.7em; font-weight: 600; color: var(--blue-500); margin: 0;">Feedback</p>
+      <span class="tag tag-beige" style="font-size: 0.45em;">veredicto</span>
+    </div>
+    <div class="card" style="text-align: center;">
+      <p style="font-size: 0.7em; font-weight: 600; color: var(--blue-500); margin: 0;">MCP Tools</p>
+      <span class="tag tag-beige" style="font-size: 0.45em;">herramientas</span>
+    </div>
+  </div>
+  <p class="small" style="margin-top: 0.8em;">Cada agente es un proceso independiente con su propio LLM, conectado via A2A</p>
+</section>
+
+<!-- ═══════════════════════ SLIDE 9: FLUJO ═══════════════════════ -->
+<section>
+  <h2>Flujo de ejecución</h2>
+  <p class="subtitle" style="margin-bottom: 1em;">7 fases &mdash; el LLM decide el plan, no el código</p>
+  <div style="display: flex; gap: 0.5em; flex-wrap: wrap; justify-content: center;">
+    <div class="card" style="flex: 0 0 auto; text-align: center; padding: 0.6em 0.8em;">
+      <p style="font-size: 0.9em; font-weight: 600; color: var(--blue-500); margin: 0;">1</p>
+      <p style="font-size: 0.5em; margin: 0.2em 0 0 0;">Discover</p>
+    </div>
+    <span class="flow-arrow" style="align-self: center;">&rarr;</span>
+    <div class="card" style="flex: 0 0 auto; text-align: center; padding: 0.6em 0.8em;">
+      <p style="font-size: 0.9em; font-weight: 600; color: var(--blue-500); margin: 0;">2</p>
+      <p style="font-size: 0.5em; margin: 0.2em 0 0 0;">Plan</p>
+    </div>
+    <span class="flow-arrow" style="align-self: center;">&rarr;</span>
+    <div class="card" style="flex: 0 0 auto; text-align: center; padding: 0.6em 0.8em;">
+      <p style="font-size: 0.9em; font-weight: 600; color: var(--blue-500); margin: 0;">3</p>
+      <p style="font-size: 0.5em; margin: 0.2em 0 0 0;">Capacity</p>
+    </div>
+    <span class="flow-arrow" style="align-self: center;">&rarr;</span>
+    <div class="card" style="flex: 0 0 auto; text-align: center; padding: 0.6em 0.8em;">
+      <p style="font-size: 0.9em; font-weight: 600; color: var(--blue-500); margin: 0;">4</p>
+      <p style="font-size: 0.5em; margin: 0.2em 0 0 0;">Execute</p>
+    </div>
+    <span class="flow-arrow" style="align-self: center;">&rarr;</span>
+    <div class="card card-blue" style="flex: 0 0 auto; text-align: center; padding: 0.6em 0.8em;">
+      <p style="font-size: 0.9em; font-weight: 600; color: var(--blue-600); margin: 0;">5</p>
+      <p style="font-size: 0.5em; margin: 0.2em 0 0 0;">Consensus</p>
+    </div>
+    <span class="flow-arrow" style="align-self: center;">&rarr;</span>
+    <div class="card" style="flex: 0 0 auto; text-align: center; padding: 0.6em 0.8em;">
+      <p style="font-size: 0.9em; font-weight: 600; color: var(--blue-500); margin: 0;">6</p>
+      <p style="font-size: 0.5em; margin: 0.2em 0 0 0;">Feedback</p>
+    </div>
+    <span class="flow-arrow" style="align-self: center;">&rarr;</span>
+    <div class="card" style="flex: 0 0 auto; text-align: center; padding: 0.6em 0.8em;">
+      <p style="font-size: 0.9em; font-weight: 600; color: var(--blue-500); margin: 0;">7</p>
+      <p style="font-size: 0.5em; margin: 0.2em 0 0 0;">Synthesize</p>
+    </div>
+  </div>
+  <div class="grid-2" style="margin-top: 1.2em; max-width: 85%; margin-left: auto; margin-right: auto;">
+    <div class="card">
+      <h3>Lo que decide el LLM</h3>
+      <ul>
+        <li>Qué skills usar y en qué orden</li>
+        <li>Qué roles asignar a cada agente</li>
+        <li>Cuándo extender el debate</li>
+        <li>Si añadir agentes nuevos</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Lo que está hardcodeado</h3>
+      <ul>
+        <li>Métricas de consenso (embeddings)</li>
+        <li>Umbral de convergencia (0.75)</li>
+        <li>Máximo de rondas de extensión (3)</li>
+        <li>Pesos de los componentes del score</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════ SLIDE 10: CONSENSO ═══════════════════════ -->
+<section>
+  <h2>Consenso empírico</h2>
+  <p class="subtitle" style="margin-bottom: 1em;">Sin opinión del LLM &mdash; solo matemáticas</p>
+  <div class="grid-2" style="max-width: 90%; margin: 0 auto;">
+    <div>
+      <div class="card" style="margin-bottom: 0.8em;">
+        <h3>Eje AE1 &harr; AE2</h3>
+        <p>Las aperturas de AE1 y AE2 definen posición 0.0 y 1.0.
+        Cada texto posterior se ubica por <span class="accent">similitud coseno</span> con esos anclas.</p>
+      </div>
+      <div class="card">
+        <h3>4 componentes</h3>
+        <ul>
+          <li><span class="accent">Dispersión</span> (40%) &mdash; qué tan cerca están</li>
+          <li><span class="accent">Similitud</span> (35%) &mdash; semántica entre textos</li>
+          <li><span class="accent">Movimiento</span> (15%) &mdash; ¿se están moviendo?</li>
+          <li><span class="accent">Concesiones</span> (10%) &mdash; "tienes razón"</li>
+        </ul>
+      </div>
+    </div>
+    <div class="card card-blue" style="text-align: center; display: flex; flex-direction: column; justify-content: center;">
+      <p style="font-size: 0.65em; color: var(--muted); margin: 0;">Fórmula del score</p>
+      <p style="font-size: 0.75em; font-family: 'JetBrains Mono'; margin: 0.8em 0;">
+        score = 0.40 &middot; dispersión<br>
+        &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;+ 0.35 &middot; similitud<br>
+        &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;+ 0.15 &middot; movimiento<br>
+        &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;+ 0.10 &middot; concesiones
+      </p>
+      <p style="font-size: 0.65em; margin: 0.5em 0 0 0;">
+        Si score &ge; <span class="accent" style="font-size: 1.3em;">0.75</span> &rarr; consenso
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════ SLIDE 11: DYNAMIC AGENTS (KILLER FEATURE) ═══════════════════════ -->
+<section data-background-color="#1B4F72">
+  <h2 style="color: var(--beige-200);">Adición dinámica de agentes</h2>
+  <p style="color: var(--blue-200); font-size: 0.7em; margin-bottom: 1.2em;">
+    La potencia real del protocolo A2A aplicada a nuestro caso de uso
+  </p>
+  <div class="grid-2" style="max-width: 90%; margin: 0 auto;">
+    <div class="card" style="background: rgba(255,255,255,0.1); border-color: rgba(255,255,255,0.2);">
+      <h3 style="color: var(--beige-200);">Ronda 1</h3>
+      <p style="color: var(--blue-200);">AE1, AE2 y AE3 debaten. No llegan a consenso.</p>
+      <p style="color: var(--blue-200);">El orquestador detecta agentes disponibles en el registry que no están participando.</p>
+    </div>
+    <div class="card" style="background: rgba(255,255,255,0.1); border-color: rgba(255,255,255,0.2);">
+      <h3 style="color: var(--beige-200);">Ronda 2</h3>
+      <p style="color: var(--blue-200);">El planner decide: "Un experto legal ayudaría a desbloquear esto."</p>
+      <p style="color: var(--blue-200);"><span style="color: var(--beige-300); font-weight: 500;">AE4 se incorpora</span> al debate con contexto completo de lo discutido.</p>
+    </div>
+  </div>
+  <div style="margin-top: 1.5em;">
+    <p style="color: white; font-size: 0.75em; font-weight: 400;">
+      El agente añadido puede ser de <span style="color: var(--beige-300); font-weight: 500;">otro equipo, otra organización, otro país</span>.<br>
+      Solo necesita publicar una Agent Card con skill <code style="color: var(--beige-300);">"debate"</code>.
+    </p>
+  </div>
+</section>
+
+<!-- ═══════════════════════ SLIDE 12: CÓMO FUNCIONA LA ADICIÓN ═══════════════════════ -->
+<section>
+  <h2>¿Cómo funciona?</h2>
+  <div style="text-align: center; margin: 1.2em 0;">
+    <span class="diagram-box db-beige">Score &lt; 0.75</span>
+    <span class="flow-arrow">&rarr;</span>
+    <span class="diagram-box db-blue">Buscar agentes debate<br>no participando</span>
+    <span class="flow-arrow">&rarr;</span>
+    <span class="diagram-box db-beige">Planner evalúa<br>si añadirlos</span>
+    <span class="flow-arrow">&rarr;</span>
+    <span class="diagram-box db-blue">Extensión con<br>N+1 agentes</span>
+  </div>
+  <div class="grid-3" style="margin-top: 1.2em;">
+    <div class="card">
+      <h3>Filtrado inteligente</h3>
+      <p>Solo agentes con skill <code>debate</code>. Nunca normalizer, feedback ni herramientas.</p>
+    </div>
+    <div class="card">
+      <h3>Decisión del LLM</h3>
+      <p>El planner decide si la expertise del nuevo agente ayuda al deadlock actual.</p>
+    </div>
+    <div class="card">
+      <h3>Catch-up automático</h3>
+      <p>El nuevo agente recibe todo el contexto previo via <code>depends_on</code>.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════ SLIDE 13: DEPLOY ═══════════════════════ -->
+<section>
+  <h2>Despliegue y monitorización</h2>
+  <div class="grid-2" style="margin-top: 1em;">
+    <div>
+      <div class="card" style="margin-bottom: 0.8em;">
+        <h3>Infraestructura</h3>
+        <ul>
+          <li>Docker Compose con 8 servicios</li>
+          <li>mTLS entre agentes en producción</li>
+          <li>Healthchecks con dependencias</li>
+          <li>VM en la UPC (nattech.fib.upc.edu)</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Persistencia</h3>
+        <ul>
+          <li>SQLite para historial de debates</li>
+          <li>Replay de SSE events en F5</li>
+          <li>Volúmenes Docker para datos</li>
+        </ul>
+      </div>
+    </div>
+    <div>
+      <div class="card card-blue" style="margin-bottom: 0.8em;">
+        <h3>Observabilidad</h3>
+        <ul>
+          <li><span class="accent">Prometheus</span> &mdash; métricas de cada agente</li>
+          <li><span class="accent">Loki + Promtail</span> &mdash; logs centralizados</li>
+          <li><span class="accent">Grafana</span> &mdash; dashboards en tiempo real</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>¿Qué monitorizamos?</h3>
+        <ul>
+          <li>Latencia LLM por agente y modelo</li>
+          <li>Tasa de error de cada worker</li>
+          <li>Correlación de logs por debate_id</li>
+          <li>Heatmap de deliberación</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════ SLIDE 14: LANZAR DEMO ═══════════════════════ -->
+<section data-background-color="#F2E8D5">
+  <div class="center-v" style="min-height: 60vh;">
+    <p style="font-size: 0.7em; color: var(--muted); text-transform: uppercase; letter-spacing: 0.15em;">Momento de la verdad</p>
+    <h2 style="font-size: 2.2em; color: var(--blue-600); margin: 0.3em 0;">Lanzamos la demo</h2>
+    <p style="font-size: 0.8em; color: var(--dark);">
+      Mientras los agentes debaten, hablemos del futuro del protocolo.
+    </p>
+  </div>
+</section>
+
+<!-- ═══════════════════════ SLIDE 15: TESIS EXPERTA ═══════════════════════ -->
+<section>
+  <div class="quote" style="margin: 0.5em auto; max-width: 85%;">
+    A2A será al ecosistema de agentes lo que HTTP fue a la web:<br>
+    el protocolo que permite que agentes de distintos proveedores<br>
+    colaboren sin conocerse previamente.
+  </div>
+  <div style="margin-top: 1.5em;">
+    <h3 style="text-align: center;">¿Por qué creemos esto?</h3>
+    <div class="grid-3" style="margin-top: 0.8em;">
+      <div class="card">
+        <span class="icon">&#x1f4a1;</span>
+        <h3>El problema es real</h3>
+        <p>Hoy cada framework de agentes es un silo. LangChain no habla con CrewAI ni con AutoGen.</p>
+      </div>
+      <div class="card">
+        <span class="icon">&#x1f3e2;</span>
+        <h3>Respaldo de la industria</h3>
+        <p>Google, Salesforce, SAP, Atlassian, MongoDB y más de 50 empresas detrás.</p>
+      </div>
+      <div class="card">
+        <span class="icon">&#x1f527;</span>
+        <h3>Diseño pragmático</h3>
+        <p>JSON-RPC, HTTP, Agent Cards. Usa estándares probados, no reinventa la rueda.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════ SLIDE 16: DONDE SERÁ DIFERENCIAL ═══════════════════════ -->
+<section>
+  <h2>Donde A2A puede ser diferencial</h2>
+  <div class="grid-2" style="margin-top: 1em;">
+    <div class="card" style="margin-bottom: 0.8em;">
+      <h3>&#x1f3e5; &nbsp;Empresa</h3>
+      <p>Un agente de RRHH de SAP negocia vacaciones con un agente de planning de Jira. Cada empresa mantiene su agente, A2A los conecta.</p>
+    </div>
+    <div class="card" style="margin-bottom: 0.8em;">
+      <h3>&#x1f4b0; &nbsp;Marketplaces de agentes</h3>
+      <p>Publicar agentes especializados como servicios. Descubrimiento automático por skills. Economía de agentes.</p>
+    </div>
+    <div class="card">
+      <h3>&#x1f3d7;&#xfe0f; &nbsp;Cadenas de valor</h3>
+      <p>Agente de un proveedor coordina con agente de logística de otra empresa para optimizar entregas en tiempo real.</p>
+    </div>
+    <div class="card">
+      <h3>&#x1f9ea; &nbsp;Investigación</h3>
+      <p>Agentes de distintos laboratorios analizan un mismo dataset desde perspectivas diferentes y consolidan hallazgos.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════ SLIDE 17: RETOS Y LIMITACIONES ═══════════════════════ -->
+<section>
+  <h2>Retos y preguntas abiertas</h2>
+  <div class="grid-2" style="margin-top: 1em;">
+    <div>
+      <div class="card" style="margin-bottom: 0.8em;">
+        <h3 class="con">Confianza y seguridad</h3>
+        <p>¿Cómo confías en un agente que no conoces? Autenticación, autorización, sandboxing de acciones.</p>
+      </div>
+      <div class="card">
+        <h3 class="con">Observabilidad a escala</h3>
+        <p>Con decenas de agentes interactuando, el debugging se vuelve exponencialmente difícil. Necesitamos tracing distribuido nativo.</p>
+      </div>
+    </div>
+    <div>
+      <div class="card" style="margin-bottom: 0.8em;">
+        <h3 class="con">Competencia con MCP</h3>
+        <p>Model Context Protocol (Anthropic) resuelve parte del problema. ¿Convivencia o guerra de estándares?</p>
+      </div>
+      <div class="card">
+        <h3 class="pro">Nuestra perspectiva</h3>
+        <p>MCP conecta modelos con herramientas. A2A conecta <span class="accent">agentes entre sí</span>. Son complementarios, no competidores.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════ SLIDE 18: A2A vs MCP ═══════════════════════ -->
+<section>
+  <h2>A2A + MCP = el stack completo</h2>
+  <p class="subtitle" style="margin-bottom: 1.2em;">No compiten &mdash; cada uno resuelve una capa distinta</p>
+  <table class="compare-table" style="max-width: 85%; margin: 0 auto;">
+    <tr>
+      <th></th>
+      <th>MCP (Anthropic)</th>
+      <th>A2A (Google)</th>
+    </tr>
+    <tr>
+      <td><strong>Conecta</strong></td>
+      <td>Modelo &harr; Herramientas</td>
+      <td>Agente &harr; Agente</td>
+    </tr>
+    <tr>
+      <td><strong>Analogía</strong></td>
+      <td>USB para un dispositivo</td>
+      <td>HTTP entre servidores</td>
+    </tr>
+    <tr>
+      <td><strong>Ejemplo</strong></td>
+      <td>Agente accede a base de datos</td>
+      <td>Dos agentes negocian un contrato</td>
+    </tr>
+    <tr>
+      <td><strong>Scope</strong></td>
+      <td>Dentro de un agente</td>
+      <td>Entre agentes independientes</td>
+    </tr>
+  </table>
+  <div class="card" style="max-width: 70%; margin: 1.2em auto; text-align: center;">
+    <p style="margin: 0;">En nuestro proyecto <span class="accent">usamos ambos</span>: MCP para que los agentes accedan a herramientas,
+    A2A para que se comuniquen entre ellos.</p>
+  </div>
+</section>
+
+<!-- ═══════════════════════ SLIDE 19: LECCIONES ═══════════════════════ -->
+<section data-background-color="#F2E8D5">
+  <h2 style="color: var(--blue-600);">Lo que hemos aprendido</h2>
+  <div class="grid-3" style="margin-top: 1.2em;">
+    <div class="card">
+      <span class="icon">&#x1f914;</span>
+      <h3>El consenso es difícil</h3>
+      <p>Los LLMs tienden al "ambos tienen razón". Forzar convergencia real requiere prompt engineering agresivo.</p>
+    </div>
+    <div class="card">
+      <span class="icon">&#x26a1;</span>
+      <h3>Rate limits everywhere</h3>
+      <p>Con 4+ agentes en paralelo, los TPM de los proveedores se agotan rápido. La diversidad de modelos ayuda.</p>
+    </div>
+    <div class="card">
+      <span class="icon">&#x1f4ca;</span>
+      <h3>Métricas > opinión</h3>
+      <p>Medir consenso con embeddings es más fiable que pedirle al LLM que se autoevalúe.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════ SLIDE 20: DEMO RESULTS ═══════════════════════ -->
+<section>
+  <div class="center-v" style="min-height: 60vh;">
+    <p style="font-size: 0.7em; color: var(--muted); text-transform: uppercase; letter-spacing: 0.15em;">Y ahora...</p>
+    <h2 style="font-size: 2em; margin: 0.3em 0;">¿Qué han decidido los agentes?</h2>
+    <p style="font-size: 0.75em; color: var(--dark);">Veamos el resultado del debate en vivo.</p>
+  </div>
+</section>
+
+<!-- ═══════════════════════ SLIDE 21: CIERRE ═══════════════════════ -->
+<section data-background-color="#1B4F72">
+  <h2 style="color: var(--beige-200); font-size: 2em; margin-bottom: 0.6em;">Gracias</h2>
+  <div style="margin: 1.5em 0;">
+    <span class="tag tag-beige" style="font-size: 0.65em;">Agent-to-Agent Protocol v1.0</span>
+    <span class="tag" style="font-size: 0.65em; background: rgba(255,255,255,0.15); color: var(--beige-200);">Multi-Agent Deliberation</span>
+    <span class="tag tag-beige" style="font-size: 0.65em;">Dynamic Agent Discovery</span>
+  </div>
+  <p style="color: var(--blue-200); font-size: 0.7em;">¿Preguntas?</p>
+  <p style="color: rgba(255,255,255,0.4); font-size: 0.5em; margin-top: 3em;">
+    Irina Regueiro &nbsp;&middot;&nbsp; UPC &nbsp;&middot;&nbsp; 2025
+  </p>
+</section>
+
+</div><!-- /slides -->
+</div><!-- /reveal -->
+
+<script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js"></script>
+<script>
+Reveal.initialize({
+  hash: true,
+  slideNumber: 'c/t',
+  width: 1280,
+  height: 720,
+  margin: 0.08,
+  transition: 'fade',
+  transitionSpeed: 'fast',
+  controls: true,
+  controlsTutorial: false,
+  progress: true,
+  center: true,
+});
+</script>
+</body>
+</html>
